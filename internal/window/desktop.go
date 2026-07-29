@@ -3,7 +3,21 @@ package window
 import (
 	"os"
 	"path/filepath"
+
+	"tdrive-sync/internal/i18n"
 )
+
+// localized renders one desktop-entry line per supported language: the plain
+// key holds English, and a "[lang]" variant follows for every translation. The
+// desktop environment then picks the line matching its own locale, which is not
+// necessarily the one the daemon started with.
+func localized(key, msgKey string) string {
+	out := key + "=" + i18n.In(i18n.EN, msgKey) + "\n"
+	for _, l := range []i18n.Lang{i18n.DE} {
+		out += key + "[" + string(l) + "]=" + i18n.In(l, msgKey) + "\n"
+	}
+	return out
+}
 
 // InstallDesktopEntry writes a user-scope .desktop file and the app icon into
 // ~/.local/share so the Wayland compositor can associate the settings window
@@ -42,8 +56,8 @@ func InstallDesktopEntry() error {
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
 		"Name=TDrive Sync\n" +
-		"GenericName=Cloud-Synchronisation\n" +
-		"Comment=Google Drive mit dem Rechner synchronisieren\n" +
+		localized("GenericName", "desktop.generic_name") +
+		localized("Comment", "desktop.comment") +
 		"Exec=\"" + exec + "\"\n" +
 		"Icon=tdrive-sync\n" +
 		"Terminal=false\n" +
@@ -82,7 +96,7 @@ func InstallAutostart(enabled bool) error {
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
 		"Name=TDrive Sync\n" +
-		"Comment=Google Drive beim Anmelden synchronisieren\n" +
+		localized("Comment", "desktop.autostart_comment") +
 		"Exec=\"" + appExecPath() + "\" run\n" +
 		"Icon=tdrive-sync\n" +
 		"Terminal=false\n" +

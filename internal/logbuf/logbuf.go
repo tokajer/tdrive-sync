@@ -75,9 +75,8 @@ func (b *Buffer) Clear() {
 func classify(msg string) string {
 	u := strings.ToUpper(msg)
 	switch {
-	case strings.Contains(u, "ERROR"), strings.Contains(u, "FEHLER"),
-		strings.Contains(u, "FAILED"), strings.Contains(u, "CRITICAL"),
-		strings.Contains(u, "FATAL"):
+	case strings.Contains(u, "ERROR"), strings.Contains(u, "FAILED"),
+		strings.Contains(u, "CRITICAL"), strings.Contains(u, "FATAL"):
 		return "error"
 	case strings.Contains(u, "WARNING"):
 		return "warn"

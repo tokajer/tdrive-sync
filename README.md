@@ -1,229 +1,242 @@
 # TDrive Sync
 
-Ein Google-Drive-Synchronisationsclient für Linux – funktional angelehnt an den
-Windows-Client von Google Drive. Er läuft als Hintergrunddienst mit **Tray-Icon**,
-bietet ein **natives Einstellungs-Fenster** (WebKitGTK, kein Browser) und wird als
-**AppImage** ausgeliefert (eine Datei, keine Installation nötig).
+A Google Drive sync client for Linux – functionally modelled on Google's Windows
+Drive client. It runs as a background service with a **tray icon**, provides a
+**native settings window** (WebKitGTK, no browser) and ships as an **AppImage**
+(a single file, no installation needed).
 
-Als Sync-Engine dient das bewährte [rclone](https://rclone.org), das im AppImage
-mitgeliefert wird.
+The sync engine is the proven [rclone](https://rclone.org), which is bundled
+inside the AppImage.
 
-## Funktionen
+The interface follows the **system locale**: German for a German locale, English
+for everything else (including an unset locale).
 
-- **Zwei Sync-Modi, jederzeit umschaltbar:**
-  - **Stream (virtuelles Laufwerk):** Das gesamte Drive erscheint als Ordner,
-    Dateien werden bei Bedarf geladen. Spart Speicherplatz.
-  - **Mirror (lokale Kopie):** Vollständige Zwei-Wege-Synchronisation eines
-    Ordners – alles offline verfügbar.
-- **Bidirektionale Synchronisation:** Änderungen fließen in beide Richtungen –
-  lokal → Drive und Drive → lokal (Mirror-Modus, `rclone bisync`).
-- **Echtzeit-Überwachung lokaler Änderungen:** Ein nativer inotify-Watcher
-  erkennt lokale Änderungen sofort und stößt den Abgleich unmittelbar an
-  (entprellt), statt nur auf den Intervall-Timer zu warten.
-- **Periodisches Remote-Polling:** Ein Timer gleicht regelmäßig ab und erfasst so
-  auch Änderungen, die direkt in Google Drive gemacht wurden (Standard 5 min,
-  einstellbar).
-- **Konfliktbehandlung – automatisch oder manuell (in der Oberfläche wählbar):**
-  - **Automatisch:** Die neuere Datei gewinnt; im Zweifel gewinnt die Cloud. Die
-    unterlegene Kopie bleibt als **datierte Sicherung** erhalten.
-  - **Manuell** (Standard): Beide Versionen bleiben erhalten; die Oberfläche
-    listet alle offenen Konflikte, du entscheidest pro Datei
-    („Diese behalten" / „Löschen"). Ein Zähler-Badge an der Statusanzeige zeigt
-    offene Konflikte.
-- **Automatische Wiederherstellung (Auto-Recovery):** Nach mehreren
-  aufeinanderfolgenden Fehlversuchen wird automatisch ein vollständiger
-  Neuabgleich (`--resync`) ausgelöst.
-- **Erkennung verwaister Sperren:** Sperrdateien abgestürzter/abgebrochener Läufe
-  werden automatisch erkannt und entfernt.
-- **Offline verfügbar machen:** Im Stream-Modus lassen sich einzelne Ordner
-  auswählen, die dauerhaft lokal vorgehalten und offline nutzbar bleiben –
-  wie „Offline verfügbar machen" beim Windows-Client.
-- **JSON-Status-API:** Eine stets aktuelle `status.json` erlaubt einfaches
-  Monitoring von außen (zusätzlich zur HTTP-API auf 127.0.0.1).
-- **Protokoll mit Rotation:** Tägliche Logdateien mit 7-Tage-Aufbewahrung; alte
-  Dateien werden automatisch aufgeräumt.
-- **Autostart beim Anmelden:** Standardmäßig aktiv (XDG-Autostart), in der
-  Oberfläche abschaltbar.
-- **Automatische Updates:** Prüft beim Start und periodisch die GitHub-Releases,
-  meldet neue Versionen und aktualisiert die AppImage auf Knopfdruck. Optional
-  werden auch **Vorabversionen (Prereleases)** berücksichtigt. Die aktuelle
-  Version wird im Einstellungs-Fenster angezeigt.
-- **Tray-Icon** mit Statusfarbe (grün = aktuell, blau = synchronisiert,
-  rot = Fehler) und Kontextmenü.
-- **Natives Einstellungs-Fenster** mit Datei-Browser zum Auswählen der
-  Offline-Ordner (nutzt das im System vorhandene WebKitGTK, kein Web-Browser).
-- **Desktop-Benachrichtigungen** bei wichtigen Ereignissen.
-- **Automatischer Neustart** des Mounts / erneuter Abgleich bei Verbindungs­abbruch.
+## Features
 
-## AppImage bauen
+- **Two sync modes, switchable at any time:**
+  - **Stream (virtual drive):** the whole Drive shows up as a folder, files are
+    downloaded on demand. Saves disk space.
+  - **Mirror (local copy):** complete two-way synchronisation of one folder –
+    everything available offline.
+- **Bidirectional synchronisation:** changes flow both ways – local → Drive and
+  Drive → local (mirror mode, `rclone bisync`).
+- **Real-time watching of local changes:** a native inotify watcher notices
+  local changes immediately and kicks off the reconciliation right away
+  (debounced) instead of waiting for the interval timer.
+- **Periodic remote polling:** a timer reconciles regularly and so also picks up
+  changes made directly in Google Drive (5 min by default, configurable).
+- **Conflict handling – automatic or manual (selectable in the UI):**
+  - **Automatic:** the newer file wins; the cloud wins in case of doubt. The
+    losing copy is kept as a **dated backup**.
+  - **Manual** (default): both versions are kept; the UI lists every open
+    conflict and you decide per file (“Keep this one” / “Delete”). A counter
+    badge on the status line shows open conflicts.
+- **Automatic recovery (auto-recovery):** after several consecutive failed
+  attempts a full resync (`--resync`) is triggered automatically.
+- **Stale lock detection:** lock files left behind by crashed or killed runs are
+  detected and removed automatically.
+- **Make available offline:** in stream mode individual folders can be selected
+  to be kept locally for good and stay usable offline – like “Available offline”
+  in the Windows client.
+- **JSON status API:** an always-current `status.json` makes external monitoring
+  easy (in addition to the HTTP API on 127.0.0.1).
+- **Log with rotation:** daily log files with 7-day retention; old files are
+  cleaned up automatically.
+- **Autostart at login:** on by default (XDG autostart), switchable in the UI.
+- **Automatic updates:** checks the GitHub releases on start and periodically,
+  reports new versions and updates the AppImage at the press of a button.
+  Optionally **prereleases** are considered as well. The current version is
+  shown in the settings window.
+- **Tray icon** with a status colour (green = up to date, blue = syncing,
+  red = error) and a context menu.
+- **Native settings window** with a file browser for picking the offline folders
+  (uses the system's WebKitGTK, no web browser).
+- **Links open in your own browser:** the sign-in link and the setup guide's
+  links are handed to the system browser (`$BROWSER`, then `xdg-open` / `gio`,
+  then the installed browsers), never loaded inside the settings window.
+- **Desktop notifications** on important events.
+- **Automatic restart** of the mount / renewed reconciliation when the
+  connection drops.
+- **Localised interface:** German and English, chosen from the system locale.
 
-Voraussetzungen: Go ≥ 1.23, `curl`, `unzip`. rclone und appimagetool werden
-automatisch heruntergeladen.
+## Building the AppImage
+
+Requirements: Go ≥ 1.23, `curl`, `unzip`. rclone and appimagetool are downloaded
+automatically.
 
 ```bash
 ./build-appimage.sh
 ```
 
-Ergebnis: `dist/Google_Drive_Sync-x86_64.AppImage`
+Result: `dist/TDrive_Sync-x86_64.AppImage`
 
-Umgebungsvariablen (optional):
+Environment variables (optional):
 
-| Variable        | Zweck                                             |
-|-----------------|---------------------------------------------------|
-| `GO`            | Pfad zu einer bestimmten Go-Installation          |
-| `RCLONE_BIN`    | vorhandene rclone-Binary statt Download verwenden |
-| `APPIMAGETOOL`  | vorhandenes appimagetool verwenden                |
+| Variable       | Purpose                                          |
+|----------------|--------------------------------------------------|
+| `GO`           | path to a specific Go installation               |
+| `RCLONE_BIN`   | use an existing rclone binary instead of downloading |
+| `APPIMAGETOOL` | use an existing appimagetool                     |
 
-## Benutzung
-
-```bash
-chmod +x Google_Drive_Sync-x86_64.AppImage
-./Google_Drive_Sync-x86_64.AppImage
-```
-
-Beim ersten Start öffnet sich das Einstellungs-Fenster. Dort auf
-**„Bei Google anmelden"** klicken – für die Google-Anmeldung selbst öffnet sich
-einmalig der Standardbrowser (OAuth). Danach Modus wählen und im Stream-Modus
-optional Ordner als „offline" markieren.
-
-Weitere Kommandos:
+## Usage
 
 ```bash
-./Google_Drive_Sync-x86_64.AppImage login    # Anmeldung in der Konsole (headless)
-./Google_Drive_Sync-x86_64.AppImage open     # Einstellungs-Fenster öffnen
-./Google_Drive_Sync-x86_64.AppImage status   # Status ausgeben
+chmod +x TDrive_Sync-x86_64.AppImage
+./TDrive_Sync-x86_64.AppImage
 ```
 
-Ein erneuter Start bei bereits laufendem Dienst öffnet einfach die Einstellungen.
+The settings window opens on the first start. Click **“Sign in with Google”** –
+the default browser opens once for the Google sign-in itself (OAuth). Then pick a
+mode and, in stream mode, optionally mark folders as “offline”.
+
+If no browser appears, the login panel still shows the sign-in link to open by
+hand, and `tdrive-sync open-url https://example.com` tells you which handler the
+app tried and why it failed.
+
+Further commands:
+
+```bash
+./TDrive_Sync-x86_64.AppImage login    # sign in from the console (headless)
+./TDrive_Sync-x86_64.AppImage open     # open the settings window
+./TDrive_Sync-x86_64.AppImage status   # print the status
+```
+
+Starting the app again while the service is already running simply opens the
+settings.
 
 ### Autostart
 
-Der Dienst richtet sich **automatisch** für den Start beim Anmelden ein: Beim
-ersten Start wird ein XDG-Autostart-Eintrag unter
-`~/.config/autostart/tdrive-sync.desktop` angelegt (verweist auf den AppImage-/
-Programm-Pfad). Abschalten oder wieder aktivieren lässt sich das jederzeit über
-den Schalter **„Beim Anmelden automatisch starten"** im Einstellungs-Fenster.
+The service registers itself for start at login **automatically**: on the first
+start an XDG autostart entry is created at
+`~/.config/autostart/tdrive-sync.desktop` (pointing at the AppImage / program
+path). It can be switched off and on again at any time via the
+**“Start automatically at login”** toggle in the settings window.
 
-## Automatische Updates
+## Automatic updates
 
-Die AppImage kann sich selbst aktualisieren. Der Dienst prüft **beim Start** und
-danach in Abständen die
-[GitHub-Releases](https://github.com/tokajer/tdrive-sync/releases) des Projekts:
+The AppImage can update itself. The service checks the project's
+[GitHub releases](https://github.com/tokajer/tdrive-sync/releases) **on start**
+and periodically afterwards:
 
-- Ist eine neuere Version verfügbar, erscheint im Einstellungs-Fenster ein
-  Hinweis mit Button **„Jetzt aktualisieren"** und eine Desktop-Benachrichtigung.
-- Beim Aktualisieren wird das passende `*.AppImage`-Asset heruntergeladen und die
-  laufende Datei **atomar ersetzt**; anschließend genügt ein Klick auf
-  **„Neu starten"**.
-- Mit der Option **„Vorabversionen"** werden auch als *Prerelease* markierte
-  Releases einbezogen.
+- If a newer version is available, the settings window shows a notice with an
+  **“Update now”** button, plus a desktop notification.
+- Updating downloads the matching `*.AppImage` asset and **atomically replaces**
+  the running file; a click on **“Restart”** afterwards is all it takes.
+- The **“Prereleases”** option includes releases marked as *prerelease*.
 
-Die **angezeigte Version** wird beim Bau aus dem Git-Tag gesetzt
-(`-ldflags -X main.version=…`; im GitHub-Build der getaggte Release). Lokale
-Builds ohne Tag melden sich als **`local-dev-build`** und bieten kein
-Selbstupdate (nur die AppImage-Version kann sich ersetzen).
+The **displayed version** is set at build time from the git tag
+(`-ldflags -X main.version=…`; the tagged release in the GitHub build). Local
+builds without a tag report **`local-dev-build`** and offer no self-update (only
+the AppImage build can replace itself).
 
-Abschalten: `update_check_disabled: true` in der `config.yaml`.
+Switching it off: `update_check_disabled: true` in `config.yaml`.
 
-## Voraussetzungen zur Laufzeit
+## Runtime requirements
 
-- **FUSE 3** (`fusermount3`) für den Stream-Modus – auf den meisten Distributionen
-  vorinstalliert.
-- **WebKitGTK** (`libwebkit2gtk-4.1`) für das Einstellungs-Fenster – auf den
-  meisten Desktops vorhanden. Fehlt es, läuft der Dienst weiter; das Fenster kann
-  dann nicht geöffnet werden (die HTTP-Steuerung auf 127.0.0.1 bleibt aber aktiv).
-- **Tray-Icon:** Es wird ein *StatusNotifierItem*-Host benötigt. KDE Plasma, XFCE,
-  Cinnamon u. a. bringen das mit. Unter **GNOME** ist die Erweiterung
-  *AppIndicator and KStatusNotifierItem Support* nötig. Ohne Tray-Host läuft der
-  Dienst trotzdem – das Einstellungs-Fenster erreichst du dann über
-  `tdrive-sync open`.
+- **FUSE 3** (`fusermount3`) for stream mode – preinstalled on most
+  distributions.
+- **WebKitGTK** (`libwebkit2gtk-4.1`) for the settings window – present on most
+  desktops. Without it the service keeps running; the window cannot be opened
+  (but the HTTP control on 127.0.0.1 stays available).
+- **Tray icon:** a *StatusNotifierItem* host is required. KDE Plasma, XFCE,
+  Cinnamon and others ship one. On **GNOME** the *AppIndicator and
+  KStatusNotifierItem Support* extension is needed. Without a tray host the
+  service still runs – reach the settings window via `tdrive-sync open`.
 
-## Eigene Google-OAuth-Zugangsdaten (später)
+## Your own Google OAuth credentials
 
-Standardmäßig werden die in rclone eingebauten Google-Zugangsdaten verwendet –
-sofort startklar für den privaten Gebrauch. Wenn das Projekt wächst und höhere
-Limits / eigenes Branding gewünscht sind, genügt es, in der Konfigurationsdatei
-`~/.config/tdrive-sync/config.yaml` die eigenen Werte einzutragen:
+Google is switching off rclone's shared Drive credentials at the end of 2026, so
+add your own OAuth client once — the settings window walks through it (step 1 of
+the setup: import the JSON from the Google Cloud console, or paste client ID and
+client secret). Alternatively, put the values into
+`~/.config/tdrive-sync/config.yaml` directly:
 
 ```yaml
 google:
-  client_id: "DEINE_CLIENT_ID"
-  client_secret: "DEIN_CLIENT_SECRET"
+  client_id: "YOUR_CLIENT_ID"
+  client_secret: "YOUR_CLIENT_SECRET"
 ```
 
-Danach einmal neu anmelden. Eine eigene Client-ID legt man in der
-[Google Cloud Console](https://console.cloud.google.com) an (OAuth-Client,
-Typ „Desktop", Drive-API aktivieren).
+Sign in once afterwards. Own credentials are created in the
+[Google Cloud Console](https://console.cloud.google.com) (OAuth client of type
+“Desktop app”, with the Drive API enabled).
 
-## Konfiguration
+## Configuration
 
-Alle Einstellungen liegen unter `~/.config/tdrive-sync/`:
+All settings live under `~/.config/tdrive-sync/`:
 
-- `config.yaml` – App-Einstellungen (Modus, Ordner, Offline-Pfade, Intervall,
-  Konfliktmodus, Autostart, Port, OAuth)
-- `rclone.conf` – rclone-Remote inkl. OAuth-Token
+- `config.yaml` – app settings (mode, folder, offline paths, interval, conflict
+  mode, autostart, port, OAuth)
+- `rclone.conf` – the rclone remote including the OAuth token
 
-Wichtige Felder in `config.yaml`:
+Important fields in `config.yaml`:
 
 ```yaml
-sync_mode: stream            # "stream" oder "mirror"
-conflict_mode: manual        # "manual" (Standard) oder "auto"
-mirror_interval_sec: 300     # Polling-Intervall im Mirror-Modus (Sekunden)
-autostart_disabled: false    # true = kein Autostart beim Anmelden
-update_prerelease: false     # true = auch Vorabversionen (Prereleases) anbieten
-update_check_disabled: false # true = keine automatische Update-Prüfung
+sync_mode: stream            # "stream" or "mirror"
+conflict_mode: manual        # "manual" (default) or "auto"
+mirror_interval_sec: 300     # polling interval in mirror mode (seconds)
+autostart_disabled: false    # true = no autostart at login
+update_prerelease: false     # true = offer prereleases as well
+update_check_disabled: false # true = no automatic update check
 ```
 
-Laufzeitdaten liegen unter `~/.local/state/tdrive-sync/` (bzw. `$XDG_STATE_HOME`):
+Runtime data lives under `~/.local/state/tdrive-sync/` (or `$XDG_STATE_HOME`):
 
-- `status.json` – aktueller Status für Monitoring (JSON-Status-API)
-- `logs/tdrive-sync-JJJJ-MM-TT.log` – tägliche Logdateien, 7 Tage Aufbewahrung
+- `status.json` – current status for monitoring (JSON status API)
+- `logs/tdrive-sync-YYYY-MM-DD.log` – daily log files, 7-day retention
 
-Der VFS-/bisync-Cache liegt unter `~/.cache/tdrive-sync/` (u. a. `bisync/` mit
-Arbeits- und Sperrdateien).
+The VFS / bisync cache lives under `~/.cache/tdrive-sync/` (including `bisync/`
+with the work and lock files).
 
-## Architektur
+## Architecture
 
 ```
-cmd/tdrive-sync      Einstiegspunkt (Daemon, CLI, Single-Instance)
-internal/config      Laden/Speichern der YAML-Konfiguration
-internal/rclone      rclone-Wrapper (Login, mount, bisync, RC-API, Listing)
-internal/manager     Sync-Manager: Modus-Steuerung, Status, Offline-Pinning,
-                     inotify-Watcher, Auto-Recovery, Konfliktauflösung
-internal/webui       lokaler Steuer-Server (127.0.0.1) + eingebettete Oberfläche
-internal/window      natives Einstellungs-Fenster (WebKitGTK via dlopen, ohne Dev-Header)
-internal/tray        Tray-Icon über DBus StatusNotifierItem (ohne GTK/cgo)
-internal/notify      Desktop-Benachrichtigungen über DBus
-internal/updater     Selbstupdate über GitHub-Releases (Check, Download, Austausch)
-internal/logbuf      In-Memory-Ringpuffer für das Protokoll in der Oberfläche
-internal/logfile     Tages-rotierende Logdatei mit 7-Tage-Aufbewahrung
-packaging/           AppRun, Desktop-File, Icon
-build-appimage.sh    Build-Skript
+cmd/tdrive-sync      entry point (daemon, CLI, single instance)
+internal/config      loading/saving the YAML configuration
+internal/rclone      rclone wrapper (login, mount, bisync, RC API, listing)
+internal/manager     sync manager: mode control, status, offline pinning,
+                     inotify watcher, auto-recovery, conflict resolution
+internal/i18n        message catalogs (German/English) + locale detection
+internal/webui       local control server (127.0.0.1) + embedded interface
+internal/window      native settings window (WebKitGTK via dlopen, no dev headers)
+internal/tray        tray icon via DBus StatusNotifierItem (no GTK/cgo)
+internal/notify      desktop notifications via DBus
+internal/updater     self-update via GitHub releases (check, download, replace)
+internal/logbuf      in-memory ring buffer for the log shown in the UI
+internal/logfile     day-rotating log file with 7-day retention
+packaging/           AppRun, desktop file, icon
+build-appimage.sh    build script
 ```
 
-**Sync-Modi im Detail:**
+**The sync modes in detail:**
 
-- *Stream* startet `rclone mount` mit vollem VFS-Cache. Als „offline" markierte
-  Ordner werden vollständig durch den Mount gelesen, damit sie im Cache landen und
-  ohne Verbindung verfügbar bleiben.
-- *Mirror* nutzt `rclone bisync` für eine echte Zwei-Wege-Synchronisation. Der
-  Abgleich läuft im einstellbaren Intervall (Standard 5 min), auf Knopfdruck und
-  **sofort bei lokalen Änderungen** (inotify-Watcher). Konflikte werden je nach
-  Einstellung automatisch (neuer gewinnt, im Zweifel Cloud, datierte Sicherung)
-  oder manuell in der Oberfläche gelöst. Nach mehreren Fehlversuchen erzwingt der
-  Dienst einen vollständigen `--resync` (Auto-Recovery); verwaiste Sperren werden
-  vor jedem Lauf bereinigt.
+- *Stream* starts `rclone mount` with a full VFS cache. Folders marked as
+  “offline” are read completely through the mount so they land in the cache and
+  stay available without a connection.
+- *Mirror* uses `rclone bisync` for true two-way synchronisation. It reconciles
+  on the configurable interval (5 min by default), at the press of a button and
+  **immediately on local changes** (inotify watcher). Conflicts are resolved
+  either automatically (newer wins, cloud in case of doubt, dated backup) or
+  manually in the UI, depending on the setting. After several failed attempts
+  the service forces a full `--resync` (auto-recovery); stale locks are cleaned
+  up before every run.
 
-## Hinweise / bekannte Grenzen
+**Language selection:** the language is resolved once at start from
+`LC_ALL` / `LC_MESSAGES` / `LANG` / `LANGUAGE`. Anything that is not German
+falls back to English. Log files and CLI output stay English regardless, since
+they are diagnostic.
 
-- **Offline-Pinning (Stream):** Garantiert offline verfügbar sind gepinnte Ordner,
-  solange der VFS-Cache nicht manuell geleert wird. Wer *alles* garantiert offline
-  will, nutzt den **Mirror-Modus**. Die Umschaltung ist jederzeit möglich.
-- Beim **ersten** Mirror-Abgleich führt rclone einen vollständigen `--resync` durch;
-  das kann bei großen Drives dauern.
-- Google-Docs/Sheets/Slides erscheinen (wie bei rclone üblich) als Verknüpfungs­dateien.
+## Notes / known limits
 
-## Lizenz
+- **Offline pinning (stream):** pinned folders are guaranteed to be available
+  offline as long as the VFS cache is not cleared manually. If you want
+  *everything* guaranteed offline, use **mirror mode**. Switching is possible at
+  any time.
+- On the **first** mirror reconciliation rclone performs a full `--resync`; that
+  can take a while on large Drives.
+- Google Docs/Sheets/Slides show up as link files (as usual with rclone).
 
-Der App-Code steht unter der MIT-Lizenz. Das mitgelieferte rclone steht unter der
-MIT-Lizenz (© Nick Craig-Wood).
+## License
+
+The app code is under the MIT license. The bundled rclone is under the MIT
+license (© Nick Craig-Wood).

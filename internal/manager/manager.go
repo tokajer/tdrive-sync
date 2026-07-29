@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,9 +15,14 @@ import (
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/notify"
 	"tdrive-sync/internal/rclone"
+	"tdrive-sync/internal/window"
 )
+
+// appName is the title shown on desktop notifications.
+const appName = "TDrive Sync"
 
 // State is a coarse sync state used for the tray icon and UI.
 type State string
@@ -82,7 +88,7 @@ func New(cfg *config.Config, notifier notify.Notifier, logf func(string, ...any)
 	// process (or a web page via CSRF) could drive the rclone control server.
 	rcPass, err := randomSecret()
 	if err != nil {
-		return nil, fmt.Errorf("RC-Zugangsdaten konnten nicht erzeugt werden: %w", err)
+		return nil, fmt.Errorf("could not generate RC credentials: %w", err)
 	}
 	rcUser := "tdrive-sync"
 	m := &Manager{
@@ -135,7 +141,7 @@ func (m *Manager) Rclone() *rclone.Client { return m.rc }
 func (m *Manager) Start(ctx context.Context) {
 	m.parent = ctx
 	if !m.cfg.Configured() || !m.rc.RemoteExists() {
-		m.setState(StateDisconnected, "Nicht angemeldet – bitte anmelden")
+		m.setState(StateDisconnected, i18n.T("status.signin_required"))
 		return
 	}
 	m.startMode()
@@ -224,7 +230,7 @@ func (m *Manager) SetConflictMode(mode string) error {
 // Pause stops syncing until Resume is called.
 func (m *Manager) Pause() {
 	m.stopMode()
-	m.setState(StatePaused, "Synchronisierung pausiert")
+	m.setState(StatePaused, i18n.T("status.paused"))
 }
 
 // Resume restarts syncing after a pause.
@@ -255,11 +261,19 @@ func (m *Manager) SyncNow() {
 
 // Login runs the OAuth flow, stores the account and starts syncing on success.
 func (m *Manager) Login(ctx context.Context, onLine func(string)) error {
+	// rclone opens the sign-in link via xdg-open; route that through our own
+	// opener so the link reliably reaches the user's browser. Best-effort: if the
+	// shim cannot be written, rclone opens the link itself as before.
+	if dir, err := window.InstallOpenShim(); err == nil {
+		m.rc.SetURLOpener(dir)
+	} else {
+		m.logf("browser shim unavailable, letting rclone open the sign-in link: %v", err)
+	}
 	if err := m.rc.Login(ctx, onLine); err != nil {
 		return err
 	}
 	if !m.rc.RemoteExists() {
-		return fmt.Errorf("Login wurde nicht abgeschlossen")
+		return errors.New(i18n.T("err.login_incomplete"))
 	}
 	email := m.rc.UserEmail(ctx)
 	if email == "" {
@@ -272,7 +286,7 @@ func (m *Manager) Login(ctx context.Context, onLine func(string)) error {
 	m.mu.Lock()
 	m.status.Account = email
 	m.mu.Unlock()
-	m.notifier.Notify("TDrive Sync", "Angemeldet als "+email)
+	m.notifier.Notify(appName, i18n.T("notify.signed_in_as", email))
 	m.startMode()
 	return nil
 }
@@ -288,7 +302,7 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.mu.Lock()
 	m.status.Account = ""
 	m.mu.Unlock()
-	m.setState(StateDisconnected, "Abgemeldet")
+	m.setState(StateDisconnected, i18n.T("status.signed_out"))
 	return nil
 }
 
@@ -300,7 +314,7 @@ func (m *Manager) GoogleCreds() config.GoogleCreds { return m.cfg.Google }
 // affects the next login, so it must be done while signed out.
 func (m *Manager) SetGoogleCreds(creds config.GoogleCreds) error {
 	if m.cfg.Configured() {
-		return fmt.Errorf("bitte zuerst abmelden, um den OAuth-Client zu ändern")
+		return errors.New(i18n.T("err.sign_out_first"))
 	}
 	m.cfg.Google = creds
 	if err := m.cfg.Save(); err != nil {

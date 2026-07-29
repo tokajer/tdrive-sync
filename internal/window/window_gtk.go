@@ -9,7 +9,12 @@ package window
 /*
 #cgo LDFLAGS: -ldl
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <dlfcn.h>
+
+// Implemented in Go (see window_link.go): opens a URI in the user's browser.
+extern void goOpenExternalURI(char* uri);
 
 typedef int   (*init_check_t)(int*, char***);
 typedef void* (*new_void_t)(void);
@@ -24,6 +29,11 @@ typedef unsigned long (*connect_t)(void*, const char*, void*, void*, void*, int)
 typedef void  (*set_prgname_t)(const char*);
 typedef int   (*deficon_file_t)(const char*, void**);
 typedef int   (*icon_file_t)(void*, const char*, void**);
+typedef void* (*nav_action_t)(void*);
+typedef void* (*nav_request_t)(void*);
+typedef int   (*nav_type_t)(void*);
+typedef const char* (*req_uri_t)(void*);
+typedef void  (*decision_ignore_t)(void*);
 
 static void *h_gtk, *h_gobj, *h_wk, *h_glib;
 
@@ -42,6 +52,41 @@ static load_uri_t   p_wk_load;
 static set_prgname_t  p_set_prgname;
 static deficon_file_t p_set_deficon;
 static icon_file_t    p_set_icon;
+static nav_action_t      p_nav_action;
+static nav_request_t     p_nav_request;
+static nav_type_t        p_nav_type;
+static req_uri_t         p_req_uri;
+static decision_ignore_t p_decision_ignore;
+
+// base_uri is the settings page's own URL; only links leaving it are handed to
+// the browser.
+static char base_uri[512];
+
+static int is_internal(const char* uri) {
+	size_t n = strlen(base_uri);
+	return n > 0 && strncmp(uri, base_uri, n) == 0;
+}
+
+// on_decide_policy sends links that leave the settings page to the system
+// browser. Without this a plain link would replace the settings page, and a
+// target="_blank" link (the setup guide, the OAuth sign-in link) would do
+// nothing at all, because WebKit expects the application to open new windows.
+static int on_decide_policy(void* wv, void* decision, int type, void* d) {
+	// 0 = navigation action, 1 = new window (target="_blank").
+	if (type != 0 && type != 1) return 0;
+	if (!p_nav_action || !p_nav_request || !p_req_uri || !p_decision_ignore) return 0;
+	void* action = p_nav_action(decision);
+	if (!action) return 0;
+	// In-window navigation: react to explicit link clicks only (0 = link
+	// clicked), so the initial load, reloads and form posts stay untouched.
+	if (type == 0 && p_nav_type && p_nav_type(action) != 0) return 0;
+	void* req = p_nav_request(action);
+	const char* uri = req ? p_req_uri(req) : 0;
+	if (!uri || !uri[0] || is_internal(uri)) return 0;
+	p_decision_ignore(decision);
+	goOpenExternalURI((char*)uri);
+	return 1; // handled
+}
 
 // destroy handler: quit the GTK main loop so the process exits.
 static void on_destroy(void* w, void* d) {
@@ -82,6 +127,14 @@ static int load_syms(void) {
 	p_set_deficon = (deficon_file_t) dlsym(h_gtk, "gtk_window_set_default_icon_from_file");
 	p_set_icon    = (icon_file_t)    dlsym(h_gtk, "gtk_window_set_icon_from_file");
 
+	// Optional: inspecting a navigation decision, needed to open external links
+	// in the browser. Missing symbols only mean links behave as WebKit defaults.
+	p_nav_action      = (nav_action_t)      dlsym(h_wk, "webkit_navigation_policy_decision_get_navigation_action");
+	p_nav_request     = (nav_request_t)     dlsym(h_wk, "webkit_navigation_action_get_request");
+	p_nav_type        = (nav_type_t)        dlsym(h_wk, "webkit_navigation_action_get_navigation_type");
+	p_req_uri         = (req_uri_t)         dlsym(h_wk, "webkit_uri_request_get_uri");
+	p_decision_ignore = (decision_ignore_t) dlsym(h_wk, "webkit_policy_decision_ignore");
+
 	if (!p_init_check || !p_window_new || !p_set_title || !p_set_size ||
 	    !p_add || !p_show_all || !p_connect || !p_main || !p_main_quit ||
 	    !p_wk_new || !p_wk_load) return 4;
@@ -115,6 +168,9 @@ static int run_window(const char* title, const char* url, const char* icon) {
 	if (p_grab_focus) p_grab_focus(wv);
 	// Let the page close its own window via JavaScript window.close().
 	p_connect(wv, "close", (void*)on_close, 0, 0, 0);
+	// Hand links that leave the settings page to the system browser.
+	snprintf(base_uri, sizeof(base_uri), "%s", url ? url : "");
+	p_connect(wv, "decide-policy", (void*)on_decide_policy, 0, 0, 0);
 	p_wk_load(wv, url);
 
 	p_show_all(win);
@@ -155,10 +211,10 @@ func Open(title, url string) error {
 	case 0:
 		return nil
 	case 1, 2, 3:
-		return fmt.Errorf("WebKitGTK/GTK-Bibliothek nicht gefunden (Code %d)", int(rc))
+		return fmt.Errorf("WebKitGTK/GTK library not found (code %d)", int(rc))
 	case 10:
-		return fmt.Errorf("keine grafische Sitzung (DISPLAY/Wayland) verfügbar")
+		return fmt.Errorf("no graphical session (DISPLAY/Wayland) available")
 	default:
-		return fmt.Errorf("Fenster konnte nicht geöffnet werden (Code %d)", int(rc))
+		return fmt.Errorf("could not open the window (code %d)", int(rc))
 	}
 }

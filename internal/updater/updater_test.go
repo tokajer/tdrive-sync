@@ -33,7 +33,7 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestPick(t *testing.T) {
-	app := asset{Name: "Google_Drive_Sync-x86_64.AppImage", URL: "u", Size: 1}
+	app := asset{Name: "TDrive_Sync-x86_64.AppImage", URL: "u", Size: 1}
 	rels := []ghRelease{
 		{TagName: "v0.1.0", Assets: []asset{app}},
 		{TagName: "v0.3.0-beta.1", Prerelease: true, Assets: []asset{app}},
@@ -66,7 +66,7 @@ func TestCheckAndApply(t *testing.T) {
 			Name:    "Release 0.2.0",
 			HTMLURL: "https://example/release",
 			Assets: []asset{{
-				Name: "Google_Drive_Sync-x86_64.AppImage",
+				Name: "TDrive_Sync-x86_64.AppImage",
 				URL:  srv.URL + "/download/app",
 				Size: int64(len(payload)),
 			}},

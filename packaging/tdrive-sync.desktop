@@ -1,8 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=TDrive Sync
-GenericName=Cloud-Synchronisation
-Comment=Google Drive mit dem Rechner synchronisieren
+GenericName=Cloud sync
+GenericName[de]=Cloud-Synchronisation
+Comment=Keep Google Drive in sync with your computer
+Comment[de]=Google Drive mit dem Rechner synchronisieren
 Exec=tdrive-sync
 Icon=tdrive-sync
 Terminal=false

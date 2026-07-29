@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TDrive Sync</title>
+<!--I18N-->
 <style>
   :root {
     --bg: #f5f6f8; --panel: #ffffff; --fg: #1a1c1f; --muted: #61656c;
@@ -107,23 +108,23 @@
     <svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg"><path d="M 142.12 200.64 A 74 74 0 0 0 201.99 129.29" fill="none" stroke="#f5b301" stroke-width="30" stroke-linecap="round"/><path d="M 201.99 129.29 A 74 74 0 0 0 148.40 56.87" fill="none" stroke="#ea4d3d" stroke-width="30" stroke-linecap="round"/><path d="M 124.13 54.10 L 154.19 36.68 L 142.61 77.05 Z" fill="#ea4d3d"/><path d="M 113.88 55.36 A 74 74 0 0 0 54.01 126.71" fill="none" stroke="#3d7bf4" stroke-width="30" stroke-linecap="round"/><path d="M 54.01 126.71 A 74 74 0 0 0 107.60 199.13" fill="none" stroke="#1fa463" stroke-width="30" stroke-linecap="round"/><path d="M 131.87 201.90 L 101.81 219.32 L 113.39 178.95 Z" fill="#1fa463"/></svg>
     TDrive Sync
   </h1>
-  <p class="sub">Synchronisiert Google Drive mit deinem Rechner – wie der Windows-Client.</p>
+  <p class="sub" data-i18n="ui.subtitle"></p>
 
   <!-- STATUS -->
   <div class="card">
     <div class="row">
-      <span class="badge"><span id="dot" class="dot disconnected"></span><span id="state">Wird geladen…</span></span>
+      <span class="badge"><span id="dot" class="dot disconnected"></span><span id="state" data-i18n="ui.loading"></span></span>
       <span id="conflictBadge" class="pill hidden clickable" style="border-color:var(--warn);color:var(--warn)" onclick="openConflicts()"></span>
       <span class="spacer"></span>
       <span id="account" class="muted"></span>
     </div>
     <div id="stats" class="muted" style="margin-top:8px"></div>
     <div class="row" style="margin-top:14px">
-      <button id="btnSync" class="primary">Jetzt synchronisieren</button>
-      <button id="btnPause">Pausieren</button>
-      <button id="btnOpen">Ordner öffnen</button>
+      <button id="btnSync" class="primary" data-i18n="ui.sync_now"></button>
+      <button id="btnPause" data-i18n="ui.pause"></button>
+      <button id="btnOpen" data-i18n="ui.open_folder"></button>
       <span class="spacer"></span>
-      <button id="btnLogout" class="hidden">Abmelden</button>
+      <button id="btnLogout" class="hidden" data-i18n="ui.sign_out"></button>
     </div>
   </div>
 
@@ -133,123 +134,115 @@
       <span class="badge">Version&nbsp;<b id="curVer">–</b></span>
       <span id="updBadge" class="pill hidden clickable" style="border-color:var(--accent);color:var(--accent)" onclick="openUpdate()"></span>
       <span class="spacer"></span>
-      <button id="updCheck" style="padding:4px 10px">Nach Updates suchen</button>
+      <button id="updCheck" style="padding:4px 10px" data-i18n="ui.check_updates"></button>
     </div>
     <div id="updMsg" class="muted" style="margin-top:8px"></div>
     <div class="row" style="margin-top:12px">
-      <button id="updApply" class="primary hidden">Jetzt aktualisieren</button>
-      <button id="updRestart" class="primary hidden">Neu starten</button>
-      <a id="updLink" class="hidden" href="#" target="_blank" style="color:var(--accent);font-size:13px">Release-Details ↗</a>
+      <button id="updApply" class="primary hidden" data-i18n="ui.update_now"></button>
+      <button id="updRestart" class="primary hidden" data-i18n="ui.restart"></button>
+      <a id="updLink" class="hidden" href="#" target="_blank" style="color:var(--accent);font-size:13px" data-i18n="ui.release_details"></a>
       <span class="spacer"></span>
-      <label class="off"><input type="checkbox" id="updPre"> Vorabversionen</label>
+      <label class="off"><input type="checkbox" id="updPre"> <span data-i18n="ui.prereleases"></span></label>
     </div>
   </div>
 
-  <!-- LOGIN / EINRICHTUNG (shown when not configured) -->
+  <!-- LOGIN / SETUP (shown when not configured) -->
   <div class="card hidden" id="loginCard">
-    <h2>Einrichtung</h2>
+    <h2 data-i18n="ui.setup"></h2>
 
     <div class="notice">
-      <b>Eigener Google-Zugang erforderlich</b>
-      <span class="muted">Google schaltet die gemeinsamen Zugangsdaten von rclone Ende 2026 ab. Damit die Anmeldung dauerhaft funktioniert, hinterlege einmalig deinen eigenen OAuth-Client. Das ist kostenlos und dauert wenige Minuten.</span>
-      <div style="margin-top:10px"><button id="btnGuide" style="padding:4px 10px">Anleitung anzeigen</button></div>
+      <b data-i18n="ui.setup_notice_title"></b>
+      <span class="muted" data-i18n="ui.setup_notice_body"></span>
+      <div style="margin-top:10px"><button id="btnGuide" style="padding:4px 10px" data-i18n="ui.show_guide"></button></div>
     </div>
 
     <div id="guide" class="hidden">
-      <ol class="steps">
-        <li>Öffne die <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console</a> und lege ein neues Projekt an (oder wähle ein bestehendes).</li>
-        <li>Aktiviere die <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Drive API</a> für das Projekt („Aktivieren“).</li>
-        <li>Richte den <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">OAuth-Zustimmungsbildschirm</a> ein: Nutzertyp <b>Extern</b>, App-Name und deine E-Mail als Support-Kontakt eintragen.</li>
-        <li>Setze den Veröffentlichungsstatus auf <b>„In Produktion“</b> (unter „Zielgruppe“). Sonst laufen die Anmeldungen alle 7&nbsp;Tage ab. Eine Google-Prüfung ist für den privaten Gebrauch nicht nötig.</li>
-        <li>Erstelle unter <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Anmeldedaten</a> → „Anmeldedaten erstellen“ → „OAuth-Client-ID“ einen Client vom Typ <b>Desktop-App</b>.</li>
-        <li>Lade die JSON-Datei herunter (Download-Symbol) oder kopiere <code>Client-ID</code> und <code>Client-Schlüssel</code>.</li>
-        <li>Importiere die Datei unten – oder füge die Werte manuell ein.</li>
-      </ol>
+      <ol class="steps" data-i18n-html="ui.guide_steps"></ol>
     </div>
 
     <hr class="sep">
 
-    <p class="setup-sub">1 · OAuth-Client hinterlegen</p>
-    <div id="credState" class="credstate warn">Wird geladen…</div>
+    <p class="setup-sub" data-i18n="ui.setup_step1"></p>
+    <div id="credState" class="credstate warn" data-i18n="ui.loading"></div>
 
     <div class="filerow">
       <input type="file" id="credFile" accept=".json,application/json">
-      <button id="btnImportFile">Datei importieren</button>
+      <button id="btnImportFile" data-i18n="ui.import_file"></button>
     </div>
 
     <div class="field">
-      <label for="credJson">…oder JSON-Inhalt einfügen</label>
+      <label for="credJson" data-i18n="ui.paste_json"></label>
       <textarea id="credJson" placeholder='{ "installed": { "client_id": "…", "client_secret": "…" } }'></textarea>
     </div>
     <div class="row" style="margin-bottom:6px">
-      <button id="btnImportJson" class="primary">JSON importieren</button>
+      <button id="btnImportJson" class="primary" data-i18n="ui.import_json"></button>
       <span class="spacer"></span>
-      <button id="btnManualToggle" style="padding:4px 10px">Manuell eingeben</button>
+      <button id="btnManualToggle" style="padding:4px 10px" data-i18n="ui.enter_manually"></button>
     </div>
 
     <div id="manualCreds" class="hidden" style="margin-top:12px">
       <div class="field">
-        <label for="clientId">Client-ID</label>
+        <label for="clientId" data-i18n="ui.client_id"></label>
         <input type="text" id="clientId" placeholder="…apps.googleusercontent.com" autocomplete="off">
       </div>
       <div class="field">
-        <label for="clientSecret">Client-Secret</label>
+        <label for="clientSecret" data-i18n="ui.client_secret"></label>
         <input type="password" id="clientSecret" placeholder="GOCSPX-…" autocomplete="off">
       </div>
       <div class="row">
-        <button id="btnSaveCreds" class="primary">Speichern</button>
-        <button id="btnClearCreds" style="padding:4px 10px">Zurücksetzen</button>
+        <button id="btnSaveCreds" class="primary" data-i18n="ui.save"></button>
+        <button id="btnClearCreds" style="padding:4px 10px" data-i18n="ui.reset"></button>
       </div>
     </div>
 
     <hr class="sep">
 
-    <p class="setup-sub">2 · Bei Google anmelden</p>
-    <p class="muted" style="margin-top:0">Danach mit deinem Google-Konto anmelden. Es öffnet sich ein Browserfenster.</p>
-    <button id="btnLogin" class="primary">Bei Google anmelden</button>
+    <p class="setup-sub" data-i18n="ui.setup_step2"></p>
+    <p class="muted" style="margin-top:0" data-i18n="ui.setup_step2_hint"></p>
+    <button id="btnLogin" class="primary" data-i18n="ui.sign_in"></button>
     <div id="loginBox" class="loginbox hidden"></div>
   </div>
 
   <!-- MODE -->
   <div class="card" id="modeCard">
-    <h2>Sync-Modus</h2>
+    <h2 data-i18n="ui.sync_mode"></h2>
     <div class="modes">
       <div class="mode" id="modeStream" data-mode="stream">
-        <b>Stream (virtuelles Laufwerk)</b>
-        <span class="muted">Alle Dateien sichtbar, werden bei Bedarf geladen. Einzelne Ordner offline verfügbar machen.</span>
+        <b data-i18n="ui.mode_stream"></b>
+        <span class="muted" data-i18n="ui.mode_stream_hint"></span>
       </div>
       <div class="mode" id="modeMirror" data-mode="mirror">
-        <b>Mirror (lokale Kopie)</b>
-        <span class="muted">Vollständige Zwei-Wege-Kopie. Alles offline verfügbar, belegt Speicher.</span>
+        <b data-i18n="ui.mode_mirror"></b>
+        <span class="muted" data-i18n="ui.mode_mirror_hint"></span>
       </div>
     </div>
     <div class="row" style="margin-top:14px">
-      <span class="muted">Ordner:</span>
+      <span class="muted" data-i18n="ui.folder"></span>
       <span id="localDir" class="path"></span>
-      <button id="btnChangeDir" style="padding:4px 10px">Ändern</button>
+      <button id="btnChangeDir" style="padding:4px 10px" data-i18n="ui.change"></button>
     </div>
     <div class="row" style="margin-top:12px">
-      <label class="off"><input type="checkbox" id="autostart"> Beim Anmelden automatisch starten</label>
+      <label class="off"><input type="checkbox" id="autostart"> <span data-i18n="ui.autostart"></span></label>
     </div>
   </div>
 
   <!-- CONFLICT HANDLING (mirror mode only) -->
   <div class="card hidden" id="conflictCard">
-    <h2>Konfliktbehandlung</h2>
+    <h2 data-i18n="ui.conflict_handling"></h2>
     <div class="modes">
       <div class="mode" id="cmAuto" data-cmode="auto">
-        <b>Automatisch</b>
-        <span class="muted">Neuere Datei gewinnt, im Zweifel die Cloud. Die unterlegene Kopie bleibt als datierte Sicherung erhalten.</span>
+        <b data-i18n="ui.conflict_auto"></b>
+        <span class="muted" data-i18n="ui.conflict_auto_hint"></span>
       </div>
       <div class="mode" id="cmManual" data-cmode="manual">
-        <b>Manuell</b>
-        <span class="muted">Beide Versionen bleiben erhalten. Du entscheidest unten pro Datei, welche gewinnt.</span>
+        <b data-i18n="ui.conflict_manual"></b>
+        <span class="muted" data-i18n="ui.conflict_manual_hint"></span>
       </div>
     </div>
     <div class="row" style="margin-top:14px">
-      <b style="font-size:13px">Offene Konflikte</b>
+      <b style="font-size:13px" data-i18n="ui.open_conflicts"></b>
       <span class="spacer"></span>
-      <button id="conflictRefresh" style="padding:4px 10px">Aktualisieren</button>
+      <button id="conflictRefresh" style="padding:4px 10px" data-i18n="ui.refresh"></button>
     </div>
     <div id="conflictList" style="margin-top:10px"></div>
   </div>
@@ -257,17 +250,17 @@
   <!-- LOG -->
   <div class="card">
     <div class="row" style="cursor:pointer" id="logHeader">
-      <h2 style="margin:0">Protokoll <span id="logToggle" class="muted">▸ anzeigen</span></h2>
+      <h2 style="margin:0"><span data-i18n="ui.log"></span> <span id="logToggle" class="muted" data-i18n="ui.toggle_show"></span></h2>
       <span class="spacer"></span>
       <span id="logErrCount" class="pill hidden" style="border-color:var(--err);color:var(--err)"></span>
     </div>
     <div id="logBody" class="hidden" style="margin-top:14px">
       <div class="row" style="margin-bottom:10px">
-        <label class="off"><input type="checkbox" id="logOnlyErr"> nur Fehler</label>
+        <label class="off"><input type="checkbox" id="logOnlyErr"> <span data-i18n="ui.errors_only"></span></label>
         <span class="spacer"></span>
-        <button id="logOpen" style="padding:4px 10px">Logdateien öffnen</button>
-        <button id="logRefresh" style="padding:4px 10px">Aktualisieren</button>
-        <button id="logClear" style="padding:4px 10px">Löschen</button>
+        <button id="logOpen" style="padding:4px 10px" data-i18n="ui.open_log_files"></button>
+        <button id="logRefresh" style="padding:4px 10px" data-i18n="ui.refresh"></button>
+        <button id="logClear" style="padding:4px 10px" data-i18n="ui.clear"></button>
       </div>
       <div id="logList" class="log"></div>
     </div>
@@ -275,8 +268,8 @@
 
   <!-- OFFLINE BROWSER (stream mode only) -->
   <div class="card" id="offlineCard">
-    <h2>Offline verfügbar</h2>
-    <p class="muted">Wähle Ordner, die dauerhaft lokal gespeichert und offline verfügbar bleiben sollen.</p>
+    <h2 data-i18n="ui.available_offline"></h2>
+    <p class="muted" data-i18n="ui.available_offline_hint"></p>
     <div id="crumbs" class="crumbs"></div>
     <div id="list" class="list"></div>
   </div>
@@ -284,35 +277,60 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let cur = { configured:false, mode:'stream', browsePath:'' };
+let cur = { configured:false, mode:'stream', paused:false, browsePath:'' };
+
+// --- i18n ---
+// The active language and its catalog are injected by the settings server, so
+// the page is already translated when it first renders. LOCALE also drives the
+// date/time formatting below.
+const I18N = window.I18N || {};
+const LOCALE = window.APP_LANG || 'en';
+
+// t looks up a message and fills its fmt placeholders (%s / %d) from args, in
+// order; %% becomes a literal percent sign.
+function t(key, ...args){
+  let i = 0;
+  const msg = I18N[key] !== undefined ? I18N[key] : key;
+  return msg.replace(/%[sd]/g, () => i < args.length ? String(args[i++]) : '')
+            .replace(/%%/g, '%');
+}
+// stateLabel is the fallback text for a sync state the daemon sent no message
+// for. An unknown state shows as-is rather than as a missing key.
+function stateLabel(state){ const k = 'state.' + state; return I18N[k] || state; }
+
+// applyI18n translates the static markup: data-i18n replaces the text content,
+// data-i18n-html the markup (for messages containing links).
+function applyI18n(){
+  document.documentElement.lang = LOCALE;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+}
 
 async function api(path, opts){ const r = await fetch(path, opts); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 function post(path, body){ return api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})}); }
-
-const stateLabels = { disconnected:'Nicht angemeldet', starting:'Wird gestartet…', syncing:'Synchronisiere…', idle:'Auf dem neuesten Stand', paused:'Pausiert', error:'Fehler' };
 
 function fmtBytes(n){ if(!n) return ''; const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(1)+' '+u[i]; }
 
 async function refreshStatus(){
   try {
     const d = await api('/api/status');
-    const st = d.status; cur.configured = d.configured; cur.mode = st.mode;
+    const st = d.status; cur.configured = d.configured; cur.mode = st.mode; cur.paused = st.state==='paused';
     $('#dot').className = 'dot ' + st.state;
-    $('#state').textContent = st.message || stateLabels[st.state] || st.state;
+    $('#state').textContent = st.message || stateLabel(st.state);
     $('#account').textContent = st.account || '';
     let parts = [];
     if(st.speed>0) parts.push('↑↓ ' + fmtBytes(st.speed)+'/s');
-    if(st.last_sync && st.last_sync.indexOf('0001')!==0) parts.push('Letzter Abgleich: '+ new Date(st.last_sync).toLocaleTimeString());
+    if(st.last_sync && st.last_sync.indexOf('0001')!==0) parts.push(t('ui.last_sync', new Date(st.last_sync).toLocaleTimeString(LOCALE)));
     $('#stats').innerHTML = parts.join('  ·  ');
     if(st.errors>0){
       const sep = parts.length ? '  ·  ' : '';
-      $('#stats').innerHTML += sep + '<span class="clickable" style="color:var(--err)" onclick="openLog()">'+st.errors+' Fehler</span>';
-      const pill = $('#logErrCount'); pill.textContent = st.errors+' Fehler'; pill.classList.remove('hidden');
+      $('#stats').innerHTML += sep + '<span class="clickable" style="color:var(--err)" onclick="openLog()">'+escapeHtml(t('ui.error_count', st.errors))+'</span>';
+      const pill = $('#logErrCount'); pill.textContent = t('ui.error_count', st.errors); pill.classList.remove('hidden');
     } else {
       $('#logErrCount').classList.add('hidden');
     }
 
-    $('#btnPause').textContent = st.state==='paused' ? 'Fortsetzen' : 'Pausieren';
+    $('#btnPause').textContent = cur.paused ? t('ui.resume') : t('ui.pause');
     $('#loginCard').classList.toggle('hidden', d.configured);
     if(!d.configured) ensureCredsLoaded();
     $('#btnLogout').classList.toggle('hidden', !d.configured);
@@ -328,15 +346,15 @@ async function refreshStatus(){
     $('#autostart').checked = !!d.autostart;
     if(d.configured && st.mode==='mirror') loadConflicts();
     else { lastConflictLoad = 0; updateConflictBadge(0); }
-  } catch(e){ $('#state').textContent = 'Daemon nicht erreichbar'; }
+  } catch(e){ $('#state').textContent = t('ui.daemon_unreachable'); }
 }
 
 // --- actions ---
 $('#btnSync').onclick = ()=> post('/api/sync-now');
 $('#btnOpen').onclick = ()=> post('/api/open');
-$('#btnPause').onclick = async ()=>{ const paused = $('#btnPause').textContent==='Pausieren'; await post('/api/pause',{paused}); refreshStatus(); };
-$('#btnLogout').onclick = async ()=>{ if(confirm('Wirklich abmelden?')){ await post('/api/logout'); refreshStatus(); } };
-$('#btnChangeDir').onclick = async ()=>{ const p = prompt('Lokaler Ordner (voller Pfad):', $('#localDir').textContent); if(p){ await post('/api/local-dir',{path:p}); refreshStatus(); } };
+$('#btnPause').onclick = async ()=>{ await post('/api/pause',{paused: !cur.paused}); refreshStatus(); };
+$('#btnLogout').onclick = async ()=>{ if(confirm(t('ui.confirm_sign_out'))){ await post('/api/logout'); refreshStatus(); } };
+$('#btnChangeDir').onclick = async ()=>{ const p = prompt(t('ui.prompt_local_dir'), $('#localDir').textContent); if(p){ await post('/api/local-dir',{path:p}); refreshStatus(); } };
 
 document.querySelectorAll('[data-mode]').forEach(el => el.onclick = async ()=>{
   const mode = el.dataset.mode;
@@ -354,7 +372,7 @@ document.querySelectorAll('[data-cmode]').forEach(el => el.onclick = async ()=>{
 $('#autostart').onchange = ()=> post('/api/autostart',{on: $('#autostart').checked});
 $('#conflictRefresh').onclick = ()=>loadConflicts(true);
 
-const sideLabel = { cloud:'☁️ Cloud', local:'💻 Lokal', backup:'🗄 Sicherung' };
+function sideLabel(side){ const k = 'ui.side_' + side; return I18N[k] || side; }
 let lastConflictLoad = 0;
 async function loadConflicts(force){
   if(!cur.configured || cur.mode!=='mirror') return;
@@ -367,16 +385,16 @@ async function loadConflicts(force){
     const box = $('#conflictList'); box.innerHTML='';
     const items = d.conflicts || [];
     updateConflictBadge(items.length);
-    if(items.length===0){ box.innerHTML='<div class="muted">Keine offenen Konflikte.</div>'; return; }
+    if(items.length===0){ box.innerHTML='<div class="muted">'+escapeHtml(t('ui.no_conflicts'))+'</div>'; return; }
     const list = document.createElement('div'); list.className='list';
     items.forEach(c=>{
       const item=document.createElement('div'); item.className='item';
       const name=document.createElement('div'); name.className='name';
-      name.innerHTML='📄 '+escapeHtml(c.path)+' <span class="pill">'+(sideLabel[c.side]||c.side)+'</span>';
-      const keep=document.createElement('button'); keep.textContent='Diese behalten'; keep.style.padding='4px 10px';
-      keep.onclick=async ()=>{ if(confirm('Diese Version behalten und die anderen Konfliktkopien entfernen?')){ await post('/api/conflict-resolve',{path:c.path, action:'keep'}); loadConflicts(true); } };
-      const del=document.createElement('button'); del.textContent='Löschen'; del.style.padding='4px 10px';
-      del.onclick=async ()=>{ if(confirm('Diese Kopie löschen?')){ await post('/api/conflict-resolve',{path:c.path, action:'delete'}); loadConflicts(true); } };
+      name.innerHTML='📄 '+escapeHtml(c.path)+' <span class="pill">'+escapeHtml(sideLabel(c.side))+'</span>';
+      const keep=document.createElement('button'); keep.textContent=t('ui.keep_this'); keep.style.padding='4px 10px';
+      keep.onclick=async ()=>{ if(confirm(t('ui.confirm_keep'))){ await post('/api/conflict-resolve',{path:c.path, action:'keep'}); loadConflicts(true); } };
+      const del=document.createElement('button'); del.textContent=t('ui.delete'); del.style.padding='4px 10px';
+      del.onclick=async ()=>{ if(confirm(t('ui.confirm_delete_copy'))){ await post('/api/conflict-resolve',{path:c.path, action:'delete'}); loadConflicts(true); } };
       item.appendChild(name); item.appendChild(keep); item.appendChild(del);
       list.appendChild(item);
     });
@@ -385,19 +403,19 @@ async function loadConflicts(force){
 }
 function updateConflictBadge(n){
   const b = $('#conflictBadge');
-  if(n>0){ b.textContent = n===1 ? '1 Konflikt' : n+' Konflikte'; b.classList.remove('hidden'); }
+  if(n>0){ b.textContent = n===1 ? t('ui.conflict_badge_one') : t('ui.conflict_badge_many', n); b.classList.remove('hidden'); }
   else { b.classList.add('hidden'); }
 }
 function openConflicts(){ $('#conflictCard').scrollIntoView({behavior:'smooth', block:'start'}); }
 
 // --- setup / oauth credentials ---
 $('#btnGuide').onclick = ()=>{
-  const g = $('#guide'); const shown = g.classList.toggle('hidden');
-  $('#btnGuide').textContent = shown ? 'Anleitung anzeigen' : 'Anleitung ausblenden';
+  const g = $('#guide'); const hidden = g.classList.toggle('hidden');
+  $('#btnGuide').textContent = hidden ? t('ui.show_guide') : t('ui.hide_guide');
 };
 $('#btnManualToggle').onclick = ()=>{
-  const m = $('#manualCreds'); const shown = m.classList.toggle('hidden');
-  $('#btnManualToggle').textContent = shown ? 'Manuell eingeben' : 'Manuell ausblenden';
+  const m = $('#manualCreds'); const hidden = m.classList.toggle('hidden');
+  $('#btnManualToggle').textContent = hidden ? t('ui.enter_manually') : t('ui.hide_manual');
 };
 
 let credsLoaded = false;
@@ -413,21 +431,21 @@ function setCredState(configured, clientId){
   const el = $('#credState');
   if(configured){
     el.className = 'credstate ok';
-    el.textContent = '✓ Eigener OAuth-Client aktiv' + (clientId ? ' (' + clientId + ')' : '');
+    el.textContent = clientId ? t('ui.creds_active_id', clientId) : t('ui.creds_active');
   } else {
     el.className = 'credstate warn';
-    el.textContent = '⚠ Noch kein eigener Client – es werden die Ende 2026 auslaufenden Standard-Zugangsdaten verwendet.';
+    el.textContent = t('ui.creds_missing');
   }
 }
 async function importCredsJson(text){
-  if(!text || !text.trim()){ alert('Bitte zuerst eine JSON-Datei wählen oder den Inhalt einfügen.'); return; }
+  if(!text || !text.trim()){ alert(t('ui.alert_pick_json')); return; }
   try {
     const d = await post('/api/google-creds/import', {data: text});
     setCredState(d.configured, d.client_id);
     if(d.client_id) $('#clientId').value = d.client_id;
     $('#credJson').value = '';
-    alert('OAuth-Client importiert. Du kannst dich jetzt anmelden.');
-  } catch(e){ alert('Import fehlgeschlagen: ' + e.message); }
+    alert(t('ui.alert_import_ok'));
+  } catch(e){ alert(t('ui.alert_import_failed', e.message)); }
 }
 $('#btnImportJson').onclick = ()=> importCredsJson($('#credJson').value);
 $('#credFile').onchange = ()=>{
@@ -440,27 +458,27 @@ $('#btnImportFile').onclick = ()=> $('#credFile').click();
 $('#btnSaveCreds').onclick = async ()=>{
   const client_id = $('#clientId').value.trim();
   const client_secret = $('#clientSecret').value.trim();
-  if(!client_id || !client_secret){ alert('Bitte Client-ID und Client-Secret angeben.'); return; }
+  if(!client_id || !client_secret){ alert(t('ui.alert_creds_needed')); return; }
   try {
     const d = await post('/api/google-creds/save', {client_id, client_secret});
     setCredState(d.configured, d.client_id);
     $('#clientSecret').value = '';
-    alert('OAuth-Client gespeichert. Du kannst dich jetzt anmelden.');
-  } catch(e){ alert('Speichern fehlgeschlagen: ' + e.message); }
+    alert(t('ui.alert_save_ok'));
+  } catch(e){ alert(t('ui.alert_save_failed', e.message)); }
 };
 $('#btnClearCreds').onclick = async ()=>{
-  if(!confirm('Eigenen OAuth-Client entfernen und wieder die Standard-Zugangsdaten verwenden?')) return;
+  if(!confirm(t('ui.confirm_clear_creds'))) return;
   try {
     const d = await post('/api/google-creds/save', {client_id:'', client_secret:''});
     setCredState(d.configured, d.client_id);
     $('#clientId').value = ''; $('#clientSecret').value = '';
-  } catch(e){ alert('Fehler: ' + e.message); }
+  } catch(e){ alert(t('ui.error', e.message)); }
 };
 
 // --- login ---
 $('#btnLogin').onclick = async ()=>{
   $('#loginBox').classList.remove('hidden');
-  $('#loginBox').innerHTML = 'Starte Anmeldung… ein Browserfenster sollte sich öffnen.';
+  $('#loginBox').textContent = t('ui.login_starting');
   await post('/api/login');
   pollLogin();
 };
@@ -470,12 +488,12 @@ async function pollLogin(){
   const urlLine = d.lines.find(l => l.indexOf('http://127.0.0.1')>=0 || l.indexOf('https://')>=0);
   if(urlLine){
     const m = urlLine.match(/https?:\/\/\S+/);
-    if(m) html += 'Falls sich kein Browser öffnet, öffne diesen Link:<br><a href="'+m[0]+'" target="_blank">'+m[0]+'</a><br><br>';
+    if(m) html += escapeHtml(t('ui.login_open_link'))+'<br><a href="'+escapeHtml(m[0])+'" target="_blank">'+escapeHtml(m[0])+'</a><br><br>';
   }
-  if(d.error) html += '<b style="color:var(--err)">Fehler:</b> '+d.error;
-  else if(!d.active && d.configured) html += '<b style="color:var(--ok)">Angemeldet als '+d.account+'.</b>';
-  else if(d.active) html += 'Warte auf Bestätigung im Browser…';
-  $('#loginBox').innerHTML = html || 'Starte…';
+  if(d.error) html += '<b style="color:var(--err)">'+escapeHtml(t('ui.login_error_label'))+'</b> '+escapeHtml(d.error);
+  else if(!d.active && d.configured) html += '<b style="color:var(--ok)">'+escapeHtml(t('ui.login_signed_in', d.account))+'</b>';
+  else if(d.active) html += escapeHtml(t('ui.login_waiting'));
+  $('#loginBox').innerHTML = html || escapeHtml(t('ui.login_starting_short'));
   if(d.active){ setTimeout(pollLogin, 1000); }
   else { refreshStatus(); if(d.configured) setTimeout(()=>$('#loginBox').classList.add('hidden'), 4000); }
 }
@@ -487,12 +505,12 @@ async function browse(path){
   // breadcrumbs
   const cr = $('#crumbs'); cr.innerHTML='';
   const mk = (label, p)=>{ const a=document.createElement('a'); a.textContent=label; a.onclick=()=>browse(p); return a; };
-  cr.appendChild(mk('🏠 Drive',''));
+  cr.appendChild(mk(t('ui.drive_root'),''));
   let acc='';
   (path? path.split('/'):[]).forEach(part=>{ acc = acc? acc+'/'+part : part; cr.appendChild(document.createTextNode(' / ')); cr.appendChild(mk(part, acc)); });
   // list
   const list = $('#list'); list.innerHTML='';
-  if(d.entries.length===0){ list.innerHTML='<div class="item muted">Leerer Ordner</div>'; }
+  if(d.entries.length===0){ list.innerHTML='<div class="item muted">'+escapeHtml(t('ui.empty_folder'))+'</div>'; }
   d.entries.forEach(e=>{
     const item=document.createElement('div'); item.className='item';
     const name=document.createElement('div'); name.className='name'+(e.is_dir?' dir':'');
@@ -503,22 +521,22 @@ async function browse(path){
       const off=document.createElement('label'); off.className='off';
       const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=e.offline;
       cb.onchange=async ()=>{ await post('/api/offline',{path:e.path, on:cb.checked}); };
-      off.appendChild(cb); off.appendChild(document.createTextNode('offline'));
+      off.appendChild(cb); off.appendChild(document.createTextNode(t('ui.offline')));
       item.appendChild(off);
     } else if(e.offline){
-      const p=document.createElement('span'); p.className='pill'; p.textContent='offline'; item.appendChild(p);
+      const p=document.createElement('span'); p.className='pill'; p.textContent=t('ui.offline'); item.appendChild(p);
     }
     list.appendChild(item);
   });
 }
-function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // --- log panel ---
 let logOpen = false;
 function toggleLog(force){
   logOpen = (typeof force==='boolean') ? force : !logOpen;
   $('#logBody').classList.toggle('hidden', !logOpen);
-  $('#logToggle').textContent = logOpen ? '▾ ausblenden' : '▸ anzeigen';
+  $('#logToggle').textContent = logOpen ? t('ui.toggle_hide') : t('ui.toggle_show');
   if(logOpen) loadLog();
 }
 function openLog(){ toggleLog(true); $('#logBody').scrollIntoView({behavior:'smooth', block:'nearest'}); }
@@ -526,11 +544,11 @@ async function loadLog(){
   const only = $('#logOnlyErr').checked ? '?level=error' : '';
   const d = await api('/api/logs'+only);
   const list = $('#logList'); list.innerHTML='';
-  if(d.entries.length===0){ list.innerHTML='<div class="logline muted">Keine Einträge</div>'; return; }
+  if(d.entries.length===0){ list.innerHTML='<div class="logline muted">'+escapeHtml(t('ui.no_entries'))+'</div>'; return; }
   d.entries.slice().reverse().forEach(e=>{
     const div=document.createElement('div'); div.className='logline '+e.level;
-    const t=new Date(e.time).toLocaleTimeString();
-    div.innerHTML='<span class="t">'+t+'</span><span class="m">'+escapeHtml(e.msg)+'</span>';
+    const time=new Date(e.time).toLocaleTimeString(LOCALE);
+    div.innerHTML='<span class="t">'+escapeHtml(time)+'</span><span class="m">'+escapeHtml(e.msg)+'</span>';
     list.appendChild(div);
   });
 }
@@ -538,7 +556,7 @@ $('#logHeader').onclick = ()=>toggleLog();
 $('#logOpen').onclick = (e)=>{ e.stopPropagation(); post('/api/open-logs'); };
 $('#logRefresh').onclick = (e)=>{ e.stopPropagation(); loadLog(); };
 $('#logOnlyErr').onchange = loadLog;
-$('#logClear').onclick = async (e)=>{ e.stopPropagation(); if(confirm('Protokoll und Fehlerzähler zurücksetzen?')){ await post('/api/logs/clear'); loadLog(); refreshStatus(); } };
+$('#logClear').onclick = async (e)=>{ e.stopPropagation(); if(confirm(t('ui.confirm_clear_log'))){ await post('/api/logs/clear'); loadLog(); refreshStatus(); } };
 
 // --- update panel ---
 async function loadUpdate(){
@@ -554,13 +572,13 @@ async function loadUpdate(){
     $('#updCheck').disabled = (st==='downloading');
     let msg = d.message || '';
     if(st==='available'){
-      $('#updBadge').textContent = 'Neu: '+(d.tag||d.available);
+      $('#updBadge').textContent = t('ui.update_new', d.tag||d.available);
       $('#updBadge').classList.remove('hidden');
       if(d.release_url && d.release_url!==''){ $('#updLink').href=d.release_url; $('#updLink').classList.remove('hidden'); }
       if(canUpd){ $('#updApply').classList.remove('hidden'); }
-      else { msg = 'Neue Version '+(d.tag||d.available)+' verfügbar – Selbstupdate nur in der AppImage-Version.'; }
+      else { msg = t('ui.update_appimage_only', d.tag||d.available); }
     } else if(st==='downloading'){
-      msg = 'Lade Update… '+(d.progress||0)+' %';
+      msg = t('ui.update_downloading', d.progress||0);
     } else if(st==='ready'){
       $('#updRestart').classList.remove('hidden');
     }
@@ -568,12 +586,13 @@ async function loadUpdate(){
   } catch(e){}
 }
 function openUpdate(){ $('#updateCard').scrollIntoView({behavior:'smooth', block:'start'}); }
-$('#updCheck').onclick = async ()=>{ $('#updMsg').textContent='Suche nach Updates…'; try{ await post('/api/update/check'); }catch(e){} loadUpdate(); };
-$('#updApply').onclick = async ()=>{ if(confirm('Update herunterladen und installieren?')){ await post('/api/update/apply'); loadUpdate(); } };
-$('#updRestart').onclick = async ()=>{ if(confirm('Zum Abschließen des Updates jetzt neu starten?')){ await post('/api/update/restart'); $('#updMsg').textContent='Neustart…'; setTimeout(()=>{ try{ window.close(); }catch(e){} }, 400); } };
-$('#updPre').onchange = async ()=>{ await post('/api/update/prerelease',{on:$('#updPre').checked}); $('#updMsg').textContent='Prüfe…'; setTimeout(loadUpdate, 800); };
+$('#updCheck').onclick = async ()=>{ $('#updMsg').textContent=t('ui.update_searching'); try{ await post('/api/update/check'); }catch(e){} loadUpdate(); };
+$('#updApply').onclick = async ()=>{ if(confirm(t('ui.confirm_update'))){ await post('/api/update/apply'); loadUpdate(); } };
+$('#updRestart').onclick = async ()=>{ if(confirm(t('ui.confirm_update_restart'))){ await post('/api/update/restart'); $('#updMsg').textContent=t('ui.restarting'); setTimeout(()=>{ try{ window.close(); }catch(e){} }, 400); } };
+$('#updPre').onchange = async ()=>{ await post('/api/update/prerelease',{on:$('#updPre').checked}); $('#updMsg').textContent=t('ui.update_checking'); setTimeout(loadUpdate, 800); };
 
 // init
+applyI18n();
 refreshStatus();
 loadUpdate();
 setInterval(loadUpdate, 5000);

@@ -20,7 +20,7 @@ import (
 func (m *Manager) watchMirror(ctx context.Context, root string) {
 	fd, err := syscall.InotifyInit1(syscall.IN_CLOEXEC)
 	if err != nil {
-		m.logf("Echtzeit-Überwachung nicht verfügbar (%v) – Intervall-Sync bleibt aktiv", err)
+		m.logf("real-time watching unavailable (%v) – interval sync stays active", err)
 		return
 	}
 	// Closing the fd unblocks the Read in readInotify so the goroutine exits.

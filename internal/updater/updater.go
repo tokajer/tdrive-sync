@@ -8,6 +8,7 @@ package updater
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tdrive-sync/internal/i18n"
 )
 
 // GitHub repository the releases are published under.
@@ -128,11 +131,11 @@ func New(current string, includePre bool, logf func(string, ...any)) *Updater {
 		Current:       display,
 		IncludePre:    includePre,
 		CanSelfUpdate: app != "",
-		Message:       "Noch nicht geprüft",
+		Message:       i18n.T("update.not_checked"),
 	}
 	if app == "" {
 		st.State = StateUnsupported
-		st.Message = "Selbstupdate nur in der AppImage-Version verfügbar"
+		st.Message = i18n.T("update.appimage_only")
 	}
 	u.status = st
 	return u
@@ -156,11 +159,11 @@ func (u *Updater) SetIncludePrerelease(on bool) {
 // Check queries GitHub and updates the status. It returns the applicable
 // release when a newer version is available, or nil when up to date.
 func (u *Updater) Check(ctx context.Context) (*Release, error) {
-	u.set(func(s *Status) { s.State = StateChecking; s.Message = "Suche nach Updates…" })
+	u.set(func(s *Status) { s.State = StateChecking; s.Message = i18n.T("update.checking") })
 
 	rels, err := u.fetchReleases(ctx)
 	if err != nil {
-		u.set(func(s *Status) { s.State = StateError; s.Message = "Update-Prüfung fehlgeschlagen: " + err.Error() })
+		u.set(func(s *Status) { s.State = StateError; s.Message = i18n.T("update.check_failed", err) })
 		return nil, err
 	}
 
@@ -179,7 +182,7 @@ func (u *Updater) Check(ctx context.Context) (*Release, error) {
 		u.status.ReleaseURL = ""
 		u.status.Prerelease = false
 		u.status.Progress = 0
-		u.status.Message = "Aktuell – keine neuere Version"
+		u.status.Message = i18n.T("update.up_to_date")
 		u.status.LastCheck = now
 		u.mu.Unlock()
 		return nil, nil
@@ -193,10 +196,10 @@ func (u *Updater) Check(ctx context.Context) (*Release, error) {
 	u.status.ReleaseURL = best.URL
 	u.status.Prerelease = best.Prerelease
 	u.status.Progress = 0
-	u.status.Message = "Update verfügbar: " + best.Tag
+	u.status.Message = i18n.T("update.available", best.Tag)
 	u.status.LastCheck = now
 	u.mu.Unlock()
-	u.logf("Update verfügbar: %s (installiert %s)", best.Tag, u.current)
+	u.logf("update available: %s (installed %s)", best.Tag, u.current)
 	return best, nil
 }
 
@@ -209,21 +212,21 @@ func (u *Updater) Apply(ctx context.Context) error {
 	u.mu.Unlock()
 
 	if target == "" {
-		return fmt.Errorf("Selbstupdate nur in der AppImage-Version verfügbar")
+		return errors.New(i18n.T("update.appimage_only"))
 	}
 	if rel == nil {
-		return fmt.Errorf("kein Update verfügbar")
+		return errors.New(i18n.T("update.none_available"))
 	}
 
 	u.set(func(s *Status) {
 		s.State = StateDownloading
 		s.Progress = 0
-		s.Message = "Lade Update " + rel.Tag + "…"
+		s.Message = i18n.T("update.downloading", rel.Tag)
 	})
 
 	tmp, err := u.download(ctx, rel.asset, target)
 	if err != nil {
-		u.set(func(s *Status) { s.State = StateError; s.Message = "Download fehlgeschlagen: " + err.Error() })
+		u.set(func(s *Status) { s.State = StateError; s.Message = i18n.T("update.download_failed", err) })
 		return err
 	}
 
@@ -231,16 +234,16 @@ func (u *Updater) Apply(ctx context.Context) error {
 	// rename is atomic; the running process keeps the old inode until restart.
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
-		u.set(func(s *Status) { s.State = StateError; s.Message = "Ersetzen fehlgeschlagen: " + err.Error() })
+		u.set(func(s *Status) { s.State = StateError; s.Message = i18n.T("update.replace_failed", err) })
 		return err
 	}
 
 	u.set(func(s *Status) {
 		s.State = StateReady
 		s.Progress = 100
-		s.Message = "Update " + rel.Tag + " installiert – bitte neu starten"
+		s.Message = i18n.T("update.installed", rel.Tag)
 	})
-	u.logf("Update %s installiert – Neustart erforderlich", rel.Tag)
+	u.logf("update %s installed – restart required", rel.Tag)
 	return nil
 }
 
@@ -263,7 +266,7 @@ func (u *Updater) download(ctx context.Context, a asset, target string) (string,
 	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, ".tdrive-sync-update-*.AppImage")
 	if err != nil {
-		return "", fmt.Errorf("Zielordner nicht beschreibbar: %w", err)
+		return "", fmt.Errorf("%s: %w", i18n.T("update.dir_not_writable"), err)
 	}
 	tmpPath := tmp.Name()
 	total := resp.ContentLength
@@ -303,7 +306,7 @@ func (u *Updater) download(ctx context.Context, a asset, target string) (string,
 	}
 	if a.Size > 0 && written != a.Size {
 		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("unvollständiger Download (%d/%d Bytes)", written, a.Size)
+		return "", errors.New(i18n.T("update.download_partial", written, a.Size))
 	}
 	if err := os.Chmod(tmpPath, 0o755); err != nil {
 		_ = os.Remove(tmpPath)

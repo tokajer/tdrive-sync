@@ -8,6 +8,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
+	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/manager"
 )
 
@@ -43,22 +44,22 @@ type dbusMenu struct {
 }
 
 func newMenu(act Actions) *dbusMenu {
-	header := &menuEntry{id: 1, label: "Nicht angemeldet", enabled: false}
-	pause := &menuEntry{id: 5, label: "Pausieren", enabled: true, cb: act.TogglePause}
+	header := &menuEntry{id: 1, label: i18n.T("tray.not_signed_in"), enabled: false}
+	pause := &menuEntry{id: 5, label: i18n.T("tray.pause"), enabled: true, cb: act.TogglePause}
 	m := &dbusMenu{
 		header: header,
 		pause:  pause,
 		entries: []*menuEntry{
 			header,
 			{id: 2, sep: true},
-			{id: 3, label: "Ordner öffnen", enabled: true, cb: act.OpenFolder},
-			{id: 4, label: "Jetzt synchronisieren", enabled: true, cb: act.SyncNow},
+			{id: 3, label: i18n.T("tray.open_folder"), enabled: true, cb: act.OpenFolder},
+			{id: 4, label: i18n.T("tray.sync_now"), enabled: true, cb: act.SyncNow},
 			pause,
-			{id: 6, label: "Einstellungen…", enabled: true, cb: act.OpenSettings},
+			{id: 6, label: i18n.T("tray.settings"), enabled: true, cb: act.OpenSettings},
 			{id: 7, sep: true},
-			{id: 8, label: "Abmelden", enabled: true, cb: act.Logout},
+			{id: 8, label: i18n.T("tray.sign_out"), enabled: true, cb: act.Logout},
 			{id: 9, sep: true},
-			{id: 10, label: "Beenden", enabled: true, cb: act.Quit},
+			{id: 10, label: i18n.T("tray.quit"), enabled: true, cb: act.Quit},
 		},
 	}
 	return m
@@ -163,13 +164,13 @@ func (m *dbusMenu) AboutToShow(id int32) (bool, *dbus.Error) { return false, nil
 // updateFromStatus relabels the header and pause entries and, if anything
 // changed, tells the host to re-read the layout.
 func (m *dbusMenu) updateFromStatus(st manager.Status) {
-	header := "Nicht angemeldet"
+	header := i18n.T("tray.not_signed_in")
 	if st.Account != "" {
 		header = st.Account
 	}
-	pauseLabel := "Pausieren"
+	pauseLabel := i18n.T("tray.pause")
 	if st.State == manager.StatePaused {
-		pauseLabel = "Fortsetzen"
+		pauseLabel = i18n.T("tray.resume")
 	}
 
 	m.mu.Lock()

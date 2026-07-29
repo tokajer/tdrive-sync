@@ -1,11 +1,14 @@
 package webui
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/i18n"
 )
 
 func testServer() *Server {
@@ -51,5 +54,47 @@ func TestGuard(t *testing.T) {
 					c.mutating, c.method, c.host, c.origin, w.Code, c.want)
 			}
 		})
+	}
+}
+
+// TestRenderIndex checks that the page ships the active language's messages, so
+// the frontend never has to fall back to raw keys.
+func TestRenderIndex(t *testing.T) {
+	if !bytes.Contains(indexHTML, []byte(i18nMarker)) {
+		t.Fatalf("index.html no longer contains the %s placeholder", i18nMarker)
+	}
+
+	i18n.Set(i18n.DE)
+	defer i18n.Set(i18n.EN)
+	page := string(renderIndex(indexHTML))
+
+	if strings.Contains(page, i18nMarker) {
+		t.Error("the placeholder survived rendering")
+	}
+	for _, want := range []string{`window.APP_LANG="de"`, i18n.T("ui.save"), `"ui.sync_now":`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("rendered page is missing %q", want)
+		}
+	}
+}
+
+// TestIndexKeysAreTranslated guards against a data-i18n attribute referring to a
+// key that no catalog defines — the UI would show the bare key.
+func TestIndexKeysAreTranslated(t *testing.T) {
+	catalog := i18n.Catalog()
+	page := string(indexHTML)
+	for _, attr := range []string{`data-i18n="`, `data-i18n-html="`} {
+		rest := page
+		for {
+			i := strings.Index(rest, attr)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(attr):]
+			key := rest[:strings.IndexByte(rest, '"')]
+			if _, ok := catalog[key]; !ok {
+				t.Errorf("index.html uses %s%s\" but no catalog defines it", attr, key)
+			}
+		}
 	}
 }

@@ -16,8 +16,12 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
+	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/manager"
 )
+
+// appName is the tray item title shown by the host.
+const appName = "TDrive Sync"
 
 const (
 	sniPath  = "/StatusNotifierItem"
@@ -117,12 +121,12 @@ func (s *snItem) propSpec() map[string]map[string]*prop.Prop {
 		sniIface: {
 			"Category":   {Value: "ApplicationStatus", Writable: false},
 			"Id":         {Value: "tdrive-sync", Writable: false},
-			"Title":      {Value: "TDrive Sync", Writable: false},
+			"Title":      {Value: appName, Writable: false},
 			"Status":     {Value: "Active", Writable: false},
 			"WindowId":   {Value: int32(0), Writable: false},
 			"IconName":   {Value: "", Writable: false},
 			"IconPixmap": {Value: greyFrame(), Writable: false},
-			"ToolTip":    {Value: makeToolTip("TDrive Sync", "Nicht angemeldet"), Writable: false},
+			"ToolTip":    {Value: makeToolTip(appName, i18n.T("state.disconnected")), Writable: false},
 			"ItemIsMenu": {Value: true, Writable: false},
 			"Menu":       {Value: dbus.ObjectPath(menuPath), Writable: false},
 		},
@@ -159,7 +163,7 @@ func (s *snItem) update(st manager.Status) {
 	s.mu.Unlock()
 
 	if msgChanged && s.props != nil {
-		s.props.SetMust(sniIface, "ToolTip", makeToolTip("TDrive Sync", tip))
+		s.props.SetMust(sniIface, "ToolTip", makeToolTip(appName, tip))
 		if s.conn != nil {
 			_ = s.conn.Emit(sniPath, sniIface+".NewToolTip")
 		}

@@ -17,13 +17,13 @@ GO="${GO:-go}"
 case "$(uname -m)" in
   x86_64)  ARCH=x86_64 ;;
   aarch64|arm64) ARCH=aarch64 ;;
-  *) echo "Nicht unterstützte Architektur: $(uname -m)" >&2; exit 1 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
 mkdir -p "$BUILD" "$DIST"
 
-# Version bestimmen: explizit via $VERSION, sonst der Git-Tag beim GitHub-Build
-# (GITHUB_REF_TYPE=tag), sonst `git describe`, sonst local-dev-build.
+# Determine the version: explicitly via $VERSION, else the git tag of a GitHub
+# build (GITHUB_REF_TYPE=tag), else `git describe`, else local-dev-build.
 if [ -z "${VERSION:-}" ]; then
   if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
     VERSION="$GITHUB_REF_NAME"
@@ -33,8 +33,8 @@ if [ -z "${VERSION:-}" ]; then
 fi
 echo ">> Version: $VERSION"
 
-echo ">> Baue tdrive-sync (Go)…"
-# cgo wird für das native Einstellungs-Fenster (WebKitGTK via dlopen) benötigt.
+echo ">> Building tdrive-sync (Go)…"
+# cgo is required for the native settings window (WebKitGTK via dlopen).
 CGO_ENABLED=1 "$GO" build -trimpath \
   -ldflags "-s -w -X main.version=${VERSION}" \
   -o "$BUILD/tdrive-sync" ./cmd/tdrive-sync
@@ -42,7 +42,7 @@ CGO_ENABLED=1 "$GO" build -trimpath \
 # --- rclone ---
 RCLONE_BIN="${RCLONE_BIN:-$BUILD/rclone}"
 if [ ! -x "$RCLONE_BIN" ]; then
-  echo ">> Lade rclone…"
+  echo ">> Downloading rclone…"
   case "$ARCH" in
     x86_64)  RC_ARCH=amd64 ;;
     aarch64) RC_ARCH=arm64 ;;
@@ -55,13 +55,13 @@ fi
 # --- appimagetool ---
 APPIMAGETOOL="${APPIMAGETOOL:-$BUILD/appimagetool}"
 if [ ! -x "$APPIMAGETOOL" ]; then
-  echo ">> Lade appimagetool…"
+  echo ">> Downloading appimagetool…"
   curl -fsSL -o "$APPIMAGETOOL" "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
   chmod +x "$APPIMAGETOOL"
 fi
 
 # --- assemble AppDir ---
-echo ">> Baue AppDir…"
+echo ">> Building the AppDir…"
 APPDIR="$BUILD/AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" \
@@ -85,10 +85,10 @@ cp "$ICON"                               "$APPDIR/usr/share/icons/hicolor/scalab
 ln -sf tdrive-sync.svg "$APPDIR/.DirIcon"
 
 # --- build the AppImage ---
-echo ">> Baue AppImage…"
-OUT="$DIST/Google_Drive_Sync-${ARCH}.AppImage"
+echo ">> Building the AppImage…"
+OUT="$DIST/TDrive_Sync-${ARCH}.AppImage"
 rm -f "$OUT"
 ARCH="$ARCH" "$APPIMAGETOOL" --appimage-extract-and-run --no-appstream "$APPDIR" "$OUT"
 
 echo ""
-echo ">> Fertig: $OUT"
+echo ">> Done: $OUT"

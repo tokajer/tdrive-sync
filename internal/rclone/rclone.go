@@ -19,10 +19,11 @@ import (
 
 // Client drives a single rclone binary against our private config file.
 type Client struct {
-	bin    string
-	conf   string
-	remote string
-	creds  config.GoogleCreds
+	bin       string
+	conf      string
+	remote    string
+	creds     config.GoogleCreds
+	openerDir string // PATH prefix for Login, see SetURLOpener
 }
 
 // FindBinary locates the rclone executable. Search order:
@@ -75,6 +76,13 @@ func New(remote string, creds config.GoogleCreds) (*Client, error) {
 // time), so callers should only change it while signed out.
 func (c *Client) SetCreds(creds config.GoogleCreds) { c.creds = creds }
 
+// SetURLOpener puts dir first on the PATH of the login command. rclone shows
+// the OAuth link by shelling out to xdg-open, so a directory holding our own
+// xdg-open shim routes that call into the app's opener (see
+// window.InstallOpenShim). Passing "" leaves the environment alone, and rclone
+// opens the link on its own.
+func (c *Client) SetURLOpener(dir string) { c.openerDir = dir }
+
 // Bin returns the resolved rclone binary path.
 func (c *Client) Bin() string { return c.bin }
 
@@ -110,6 +118,10 @@ func (c *Client) Login(ctx context.Context, onLine func(string)) error {
 		args = append(args, "client_secret", c.creds.ClientSecret)
 	}
 	cmd := exec.CommandContext(ctx, c.bin, args...)
+	if c.openerDir != "" {
+		cmd.Env = append(os.Environ(),
+			"PATH="+c.openerDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	return streamRun(cmd, onLine)
 }
 

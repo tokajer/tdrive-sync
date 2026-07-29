@@ -3,12 +3,15 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"gopkg.in/yaml.v3"
+
+	"tdrive-sync/internal/i18n"
 )
 
 // SyncMode selects how the Drive is made available locally.
@@ -61,7 +64,7 @@ func ParseGoogleCredsJSON(data []byte) (GoogleCreds, error) {
 		oauthClient
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return GoogleCreds{}, fmt.Errorf("JSON konnte nicht gelesen werden: %w", err)
+		return GoogleCreds{}, fmt.Errorf("%s: %w", i18n.T("err.creds_json_read"), err)
 	}
 	pick := raw.oauthClient
 	if raw.Installed != nil {
@@ -70,7 +73,7 @@ func ParseGoogleCredsJSON(data []byte) (GoogleCreds, error) {
 		pick = *raw.Web
 	}
 	if pick.ClientID == "" || pick.ClientSecret == "" {
-		return GoogleCreds{}, fmt.Errorf("client_id oder client_secret fehlen in der JSON-Datei")
+		return GoogleCreds{}, errors.New(i18n.T("err.creds_json_fields"))
 	}
 	return GoogleCreds{ClientID: pick.ClientID, ClientSecret: pick.ClientSecret}, nil
 }

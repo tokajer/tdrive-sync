@@ -9,5 +9,5 @@ const Available = false
 
 // Open is a no-op stub used when the binary is built without cgo.
 func Open(title, url string) error {
-	return fmt.Errorf("ohne cgo gebaut – natives Fenster nicht verfügbar")
+	return fmt.Errorf("built without cgo – native window not available")
 }

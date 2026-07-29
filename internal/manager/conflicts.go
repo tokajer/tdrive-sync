@@ -1,7 +1,7 @@
 package manager
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/i18n"
 )
 
 // conflictMarker is the substring rclone bisync puts into the name of a
@@ -82,10 +83,10 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 	// Clean against "/" so any ".." cannot escape the local dir.
 	full := filepath.Join(root, filepath.Clean("/"+rel))
 	if !strings.HasPrefix(full, filepath.Clean(root)+string(os.PathSeparator)) {
-		return fmt.Errorf("ungültiger Pfad")
+		return errors.New(i18n.T("err.invalid_path"))
 	}
 	if !strings.Contains(filepath.Base(full), conflictMarker) {
-		return fmt.Errorf("keine Konfliktdatei")
+		return errors.New(i18n.T("err.not_conflict_file"))
 	}
 
 	switch action {
@@ -93,7 +94,7 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 		if err := os.Remove(full); err != nil {
 			return err
 		}
-		m.logf("Konflikt gelöst: %s gelöscht", rel)
+		m.logf("conflict resolved: deleted %s", rel)
 	case "keep":
 		dir := filepath.Dir(full)
 		base := markerBase(filepath.Base(full))
@@ -102,9 +103,9 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 			return err
 		}
 		removeSiblingConflicts(dir, base, target)
-		m.logf("Konflikt gelöst: %s als %s behalten", rel, base)
+		m.logf("conflict resolved: kept %s as %s", rel, base)
 	default:
-		return fmt.Errorf("unbekannte Aktion: %s", action)
+		return errors.New(i18n.T("err.unknown_action", action))
 	}
 
 	m.SyncNow()

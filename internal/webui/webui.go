@@ -3,18 +3,19 @@
 package webui
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/manager"
 	"tdrive-sync/internal/updater"
@@ -23,6 +24,11 @@ import (
 
 //go:embed index.html
 var indexHTML []byte
+
+// i18nMarker is the placeholder in index.html that the message catalog for the
+// active language is injected into, so the page renders translated on first
+// paint instead of fetching its strings afterwards.
+const i18nMarker = "<!--I18N-->"
 
 // Server is the settings web server.
 type Server struct {
@@ -33,6 +39,7 @@ type Server struct {
 	restart func()
 	addr    string
 	log     func(string, ...any)
+	index   []byte // index.html with the message catalog injected
 
 	mu          sync.Mutex
 	loginActive bool
@@ -51,7 +58,20 @@ func New(mgr *manager.Manager, cfg *config.Config, logs *logbuf.Buffer, upd *upd
 		restart: restart,
 		addr:    fmt.Sprintf("127.0.0.1:%d", cfg.WebPort),
 		log:     logs.Logf,
+		index:   renderIndex(indexHTML),
 	}
+}
+
+// renderIndex injects the active language and its message catalog into the
+// embedded page.
+func renderIndex(page []byte) []byte {
+	catalog, err := json.Marshal(i18n.Catalog())
+	if err != nil {
+		catalog = []byte("{}")
+	}
+	script := fmt.Sprintf("<script>window.APP_LANG=%q;window.I18N=%s;</script>",
+		string(i18n.Current()), catalog)
+	return bytes.Replace(page, []byte(i18nMarker), []byte(script), 1)
 }
 
 // URL returns the address the UI is reachable at.
@@ -66,15 +86,15 @@ func (s *Server) URL() string { return "http://" + s.addr }
 func (s *Server) guard(mutating bool, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.hostAllowed(r.Host) {
-			http.Error(w, "ungültiger Host", http.StatusForbidden)
+			http.Error(w, "invalid Host header", http.StatusForbidden)
 			return
 		}
 		if o := r.Header.Get("Origin"); o != "" && !s.originAllowed(o) {
-			http.Error(w, "ungültiger Origin", http.StatusForbidden)
+			http.Error(w, "invalid Origin header", http.StatusForbidden)
 			return
 		}
 		if mutating && r.Method != http.MethodPost {
-			http.Error(w, "nur POST erlaubt", http.StatusMethodNotAllowed)
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
 		h(w, r)
@@ -148,7 +168,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(s.index)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -210,7 +230,7 @@ func (s *Server) handleConflictResolve(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Path == "" {
-		http.Error(w, "ungültige Anfrage", http.StatusBadRequest)
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
 		return
 	}
 	if err := s.mgr.ResolveConflict(body.Path, body.Action); err != nil {
@@ -234,7 +254,7 @@ func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := window.InstallAutostart(body.On); err != nil {
-		s.log("Autostart konnte nicht aktualisiert werden: %v", err)
+		s.log("could not update the autostart entry: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -246,7 +266,7 @@ func (s *Server) handleLocalDir(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Path == "" {
-		http.Error(w, "ungültiger Pfad", http.StatusBadRequest)
+		http.Error(w, i18n.T("err.invalid_path"), http.StatusBadRequest)
 		return
 	}
 	s.cfg.LocalDir = body.Path
@@ -348,7 +368,7 @@ func (s *Server) handleGoogleCredsSave(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(body.ClientID)
 	secret := strings.TrimSpace(body.ClientSecret)
 	if (id == "") != (secret == "") {
-		http.Error(w, "Client-ID und Client-Secret müssen beide angegeben werden", http.StatusBadRequest)
+		http.Error(w, i18n.T("err.creds_incomplete"), http.StatusBadRequest)
 		return
 	}
 	if err := s.mgr.SetGoogleCreds(config.GoogleCreds{ClientID: id, ClientSecret: secret}); err != nil {
@@ -433,7 +453,7 @@ func (s *Server) handleOffline(w http.ResponseWriter, r *http.Request) {
 		On   bool   `json:"on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Path == "" {
-		http.Error(w, "ungültiger Pfad", http.StatusBadRequest)
+		http.Error(w, i18n.T("err.invalid_path"), http.StatusBadRequest)
 		return
 	}
 	if err := s.mgr.SetOffline(body.Path, body.On); err != nil {
@@ -445,7 +465,9 @@ func (s *Server) handleOffline(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	go func() {
-		_ = exec.Command("xdg-open", s.cfg.LocalDir).Start()
+		if err := window.OpenPath(s.cfg.LocalDir); err != nil {
+			s.log("could not open the sync folder: %v", err)
+		}
 	}()
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -458,7 +480,9 @@ func (s *Server) handleOpenLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		_ = exec.Command("xdg-open", dir).Start()
+		if err := window.OpenPath(dir); err != nil {
+			s.log("could not open the log folder: %v", err)
+		}
 	}()
 	writeJSON(w, map[string]any{"ok": true, "path": dir})
 }
@@ -484,7 +508,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	if s.upd == nil {
-		http.Error(w, "Updater nicht verfügbar", http.StatusServiceUnavailable)
+		http.Error(w, i18n.T("update.updater_missing"), http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -495,7 +519,7 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	if s.upd == nil {
-		http.Error(w, "Updater nicht verfügbar", http.StatusServiceUnavailable)
+		http.Error(w, i18n.T("update.updater_missing"), http.StatusServiceUnavailable)
 		return
 	}
 	// Download + replace can take a while; run in the background and let the UI
@@ -535,7 +559,7 @@ func (s *Server) handleUpdatePrerelease(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleUpdateRestart(w http.ResponseWriter, r *http.Request) {
 	if s.restart == nil {
-		http.Error(w, "Neustart nicht verfügbar", http.StatusServiceUnavailable)
+		http.Error(w, i18n.T("update.restart_missing"), http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})

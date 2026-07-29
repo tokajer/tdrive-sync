@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"tdrive-sync/internal/i18n"
 )
 
 // runStream mounts the whole Drive and keeps offline-pinned paths warm. It
@@ -17,20 +19,20 @@ import (
 func (m *Manager) runStream(ctx context.Context) {
 	mp := m.cfg.LocalDir
 	if err := ensureDir(mp); err != nil {
-		m.setState(StateError, "Mount-Ordner nicht nutzbar: "+err.Error())
+		m.setState(StateError, i18n.T("status.mount_dir_error", err))
 		return
 	}
 	go m.pollStats(ctx)
 
 	firstReady := false
 	for ctx.Err() == nil {
-		m.setState(StateStarting, "Google Drive wird eingebunden…")
+		m.setState(StateStarting, i18n.T("status.mounting"))
 		cmd, done := m.startProc(m.rc.MountArgs(mp, m.rcAddr, m.cacheDir), "mount")
 
 		if m.waitMountReady(ctx, 40*time.Second) {
-			m.setState(StateIdle, "Auf dem neuesten Stand")
+			m.setState(StateIdle, i18n.T("status.up_to_date"))
 			if !firstReady {
-				m.notifier.Notify("TDrive Sync", "Laufwerk bereit unter "+mp)
+				m.notifier.Notify(appName, i18n.T("notify.drive_ready", mp))
 				firstReady = true
 			}
 			go m.warmOffline(ctx)
@@ -47,7 +49,7 @@ func (m *Manager) runStream(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			m.setState(StateError, "Verbindung unterbrochen – Neustart in 5 s…")
+			m.setState(StateError, i18n.T("status.connection_lost"))
 		}
 		if sleepCtx(ctx, 5*time.Second) {
 			return
@@ -69,7 +71,7 @@ const maxMirrorFailures = 3
 func (m *Manager) runMirror(ctx context.Context) {
 	local := m.cfg.LocalDir
 	if err := ensureDir(local); err != nil {
-		m.setState(StateError, "Sync-Ordner nicht nutzbar: "+err.Error())
+		m.setState(StateError, i18n.T("status.sync_dir_error", err))
 		return
 	}
 	workdir := filepath.Join(m.cacheDir, "bisync")
@@ -91,12 +93,12 @@ func (m *Manager) runMirror(ctx context.Context) {
 
 		switch {
 		case recovering:
-			m.logf("Auto-Wiederherstellung: vollständiger Neuabgleich nach %d Fehlversuchen", failures)
-			m.setState(StateSyncing, "Auto-Wiederherstellung: vollständiger Neuabgleich…")
+			m.logf("auto-recovery: full resync after %d failed attempts", failures)
+			m.setState(StateSyncing, i18n.T("status.auto_recovery"))
 		case first:
-			m.setState(StateSyncing, "Erstabgleich läuft (kann dauern)…")
+			m.setState(StateSyncing, i18n.T("status.first_sync"))
 		default:
-			m.setState(StateSyncing, "Synchronisiere…")
+			m.setState(StateSyncing, i18n.T("status.syncing"))
 		}
 
 		cmd, done := m.startProc(m.rc.BisyncArgs(local, workdir, m.cfg.ConflictMode, resync), "bisync")
@@ -117,15 +119,15 @@ func (m *Manager) runMirror(ctx context.Context) {
 			m.mu.Lock()
 			m.status.LastSync = time.Now()
 			m.mu.Unlock()
-			m.setState(StateIdle, "Auf dem neuesten Stand")
+			m.setState(StateIdle, i18n.T("status.up_to_date"))
 		} else {
 			failures++
 			if failures >= maxMirrorFailures {
-				m.setState(StateError, "Wiederholte Fehler – Auto-Wiederherstellung beim nächsten Lauf")
-				m.notifier.Notify("TDrive Sync", "Wiederholte Synchronisierungsfehler – automatische Wiederherstellung folgt")
+				m.setState(StateError, i18n.T("status.repeated_errors"))
+				m.notifier.Notify(appName, i18n.T("notify.repeated_errors"))
 			} else {
-				m.setState(StateError, "Synchronisierungsfehler – neuer Versuch folgt")
-				m.notifier.Notify("TDrive Sync", "Synchronisierungsfehler – wird erneut versucht")
+				m.setState(StateError, i18n.T("status.sync_error_retry"))
+				m.notifier.Notify(appName, i18n.T("notify.sync_error_retry"))
 			}
 		}
 
@@ -165,7 +167,7 @@ func (m *Manager) cleanStaleLocks(dir string, maxAge time.Duration) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
-			m.logf("Verwaiste Sperrdatei entfernt: %s", e.Name())
+			m.logf("removed stale lock file: %s", e.Name())
 		}
 	}
 }
@@ -238,13 +240,13 @@ func (m *Manager) pollStats(ctx context.Context) {
 		if m.status.State == StateIdle || m.status.State == StateSyncing {
 			if s.Transferring > 0 {
 				m.status.State = StateSyncing
-				m.status.Message = "Synchronisiere…"
+				m.status.Message = i18n.T("status.syncing")
 			} else {
 				if m.status.State == StateSyncing {
 					m.status.LastSync = time.Now()
 				}
 				m.status.State = StateIdle
-				m.status.Message = "Auf dem neuesten Stand"
+				m.status.Message = i18n.T("status.up_to_date")
 			}
 		}
 		m.mu.Unlock()

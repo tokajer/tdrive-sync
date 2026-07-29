@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/logfile"
 	"tdrive-sync/internal/manager"
@@ -31,6 +32,9 @@ import (
 // version is injected at build time via -ldflags "-X main.version=<tag>".
 // Local builds keep the default so they are clearly identifiable.
 var version = "local-dev-build"
+
+// appName is the window title and the sender shown on desktop notifications.
+const appName = "TDrive Sync"
 
 func main() {
 	log.SetFlags(log.Ltime)
@@ -47,6 +51,10 @@ func main() {
 		openWindowCmd()
 	case "status":
 		cliStatus()
+	case "open-url":
+		// Used by the xdg-open shim we put on rclone's PATH during login, and
+		// usable on its own for diagnosing a browser that will not open.
+		cliOpenURL()
 	case "version", "--version", "-v":
 		fmt.Println("tdrive-sync", version)
 	default:
@@ -55,21 +63,31 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`tdrive-sync – Google-Drive-Synchronisation
+	fmt.Print(`tdrive-sync – Google Drive synchronisation
 
-Verwendung:
-  tdrive-sync [run]     Daemon mit Tray-Icon und Einstellungs-Fenster starten (Standard)
-  tdrive-sync login     Google-Konto in der Konsole verbinden (headless)
-  tdrive-sync open      Einstellungs-Fenster öffnen
-  tdrive-sync status    Aktuellen Status anzeigen
-  tdrive-sync version   Version anzeigen
+Usage:
+  tdrive-sync [run]     start the daemon with tray icon and settings window (default)
+  tdrive-sync login     connect a Google account from the console (headless)
+  tdrive-sync open      open the settings window
+  tdrive-sync status    print the current status
+  tdrive-sync version   print the version
 `)
+}
+
+// cliOpenURL opens a URL in the user's browser.
+func cliOpenURL() {
+	if len(os.Args) < 3 {
+		log.Fatal("usage: tdrive-sync open-url <url>")
+	}
+	if err := window.OpenExternal(os.Args[2]); err != nil {
+		log.Fatalf("could not open %s: %v", os.Args[2], err)
+	}
 }
 
 func loadOrExit() *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Konfiguration konnte nicht geladen werden: %v", err)
+		log.Fatalf("could not load the configuration: %v", err)
 	}
 	return cfg
 }
@@ -89,29 +107,29 @@ func runDaemon() {
 	// Register a user-scope .desktop file + icon so the Wayland compositor can
 	// show the app logo in the settings window's titlebar/taskbar (best-effort).
 	if err := window.InstallDesktopEntry(); err != nil {
-		log.Printf("Desktop-Integration nicht möglich: %v", err)
+		log.Printf("desktop integration not possible: %v", err)
 	}
 
 	// Start on boot: register (or remove) the XDG autostart entry per config.
 	if err := window.InstallAutostart(cfg.AutostartEnabled()); err != nil {
-		log.Printf("Autostart-Eintrag nicht möglich: %v", err)
+		log.Printf("autostart entry not possible: %v", err)
 	}
 
 	// Single-instance: if a daemon already answers on the web port, just open
 	// its settings UI and exit (mimics clicking the app icon again).
 	if instanceRunning(cfg.WebPort) {
-		log.Println("Läuft bereits – öffne Einstellungen.")
+		log.Println("already running – opening the settings.")
 		spawnWindow()
 		return
 	}
 
 	logs := logbuf.New(1000)
 	logf := logs.Logf
-	notifier := notify.NewDBus("TDrive Sync", "tdrive-sync")
+	notifier := notify.NewDBus(appName, "tdrive-sync")
 
 	mgr, err := manager.New(cfg, notifier, logf)
 	if err != nil {
-		log.Fatalf("Start fehlgeschlagen: %v", err)
+		log.Fatalf("start failed: %v", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -151,7 +169,7 @@ func runDaemon() {
 	// Tray icon (best-effort; the daemon runs fine without it).
 	go func() {
 		act := tray.Actions{
-			OpenFolder:   func() { openURL(cfg.LocalDir) },
+			OpenFolder:   func() { openFolder(cfg.LocalDir) },
 			SyncNow:      func() { mgr.SyncNow() },
 			TogglePause:  func() { togglePause(mgr) },
 			OpenSettings: func() { spawnWindow() },
@@ -163,23 +181,23 @@ func runDaemon() {
 			Quit: cancel,
 		}
 		if err := tray.Run(ctx, mgr, act, logf); err != nil {
-			log.Printf("Kein Tray-Icon: %v (Daemon läuft weiter, Steuerung über %s)", err, web.URL())
+			log.Printf("no tray icon: %v (the daemon keeps running, control it via %s)", err, web.URL())
 		}
 	}()
 
 	// On first launch, open the settings window so the user can sign in.
 	if !cfg.Configured() {
-		log.Println("Noch nicht angemeldet – öffne Einstellungs-Fenster")
+		log.Println("not signed in yet – opening the settings window")
 		go func() { time.Sleep(900 * time.Millisecond); spawnWindow() }()
 	} else {
-		log.Printf("Bereit. Einstellungen über das Tray-Icon oder: %s open", exeName())
+		log.Printf("ready. Settings via the tray icon or: %s open", exeName())
 	}
 
 	if err := web.ListenAndServe(ctx); err != nil {
-		log.Printf("Web-UI-Fehler: %v", err)
+		log.Printf("web UI error: %v", err)
 	}
 	mgr.Shutdown()
-	log.Println("Beendet.")
+	log.Println("stopped.")
 }
 
 // runUpdateChecks checks for updates shortly after start and then periodically,
@@ -194,10 +212,10 @@ func runUpdateChecks(ctx context.Context, upd *updater.Updater, notifier notify.
 		rel, err := upd.Check(cctx)
 		cancel()
 		if err != nil {
-			logf("Update-Prüfung fehlgeschlagen: %v", err)
+			logf("update check failed: %v", err)
 		} else if rel != nil && rel.Version != lastNotified {
 			lastNotified = rel.Version
-			notifier.Notify("TDrive Sync", "Update verfügbar: "+rel.Tag+" – im Einstellungs-Fenster installieren")
+			notifier.Notify(appName, i18n.T("notify.update_available", rel.Tag))
 		}
 		if waitOrDone(ctx, 6*time.Hour) {
 			return
@@ -248,21 +266,21 @@ func cliLogin() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Starte Google-Anmeldung – folge dem Link im Browser…")
+	fmt.Println("starting the Google sign-in – follow the link in the browser…")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := mgr.Login(ctx, func(line string) { fmt.Println(line) }); err != nil {
-		log.Fatalf("Anmeldung fehlgeschlagen: %v", err)
+		log.Fatalf("sign-in failed: %v", err)
 	}
-	fmt.Println("Angemeldet als", cfg.AccountEmail)
+	fmt.Println("signed in as", cfg.AccountEmail)
 }
 
 // openWindowCmd opens the settings UI in a native window (blocking).
 func openWindowCmd() {
 	cfg := loadOrExit()
 	url := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort)
-	if err := window.Open("TDrive Sync", url); err != nil {
-		log.Printf("Fenster konnte nicht geöffnet werden: %v", err)
+	if err := window.Open(appName, url); err != nil {
+		log.Printf("could not open the window: %v", err)
 		os.Exit(1)
 	}
 }
@@ -279,13 +297,13 @@ var windowProcs struct {
 func spawnWindow() {
 	exe, err := os.Executable()
 	if err != nil {
-		log.Printf("Fenster-Start fehlgeschlagen: %v", err)
+		log.Printf("could not start the window: %v", err)
 		return
 	}
 	cmd := exec.Command(exe, "window")
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
-		log.Printf("Fenster-Start fehlgeschlagen: %v", err)
+		log.Printf("could not start the window: %v", err)
 		return
 	}
 	windowProcs.mu.Lock()
@@ -318,12 +336,12 @@ func exeName() string {
 func cliStatus() {
 	cfg := loadOrExit()
 	if !instanceRunning(cfg.WebPort) {
-		fmt.Println("Daemon läuft nicht.")
+		fmt.Println("the daemon is not running.")
 		return
 	}
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", cfg.WebPort))
 	if err != nil {
-		fmt.Println("Status nicht abrufbar:", err)
+		fmt.Println("status not available:", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -341,8 +359,9 @@ func instanceRunning(port int) bool {
 	return true
 }
 
-func openURL(target string) {
-	if err := exec.Command("xdg-open", target).Start(); err != nil {
-		log.Printf("xdg-open fehlgeschlagen: %v", err)
+// openFolder opens a local folder in the file manager (tray action).
+func openFolder(path string) {
+	if err := window.OpenPath(path); err != nil {
+		log.Printf("could not open %s: %v", path, err)
 	}
 }
