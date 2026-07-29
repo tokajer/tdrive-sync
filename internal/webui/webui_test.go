@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gdrive-sync/internal/config"
+	"tdrive-sync/internal/config"
 )
 
 func testServer() *Server {

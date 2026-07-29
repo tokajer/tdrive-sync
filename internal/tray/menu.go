@@ -8,7 +8,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
-	"gdrive-sync/internal/manager"
+	"tdrive-sync/internal/manager"
 )
 
 // menuEntry is one row in the tray menu.

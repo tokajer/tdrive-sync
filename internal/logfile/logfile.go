@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	filePrefix = "gdrive-sync-"
+	filePrefix = "tdrive-sync-"
 	fileSuffix = ".log"
 	dateLayout = "2006-01-02"
 )

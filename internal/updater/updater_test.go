@@ -60,7 +60,7 @@ func TestCheckAndApply(t *testing.T) {
 		_, _ = w.Write(payload)
 	})
 	var srv *httptest.Server
-	mux.HandleFunc("/repos/tokajer/gdrive-sync/releases", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/tokajer/tdrive-sync/releases", func(w http.ResponseWriter, r *http.Request) {
 		rels := []ghRelease{{
 			TagName: "v0.2.0",
 			Name:    "Release 0.2.0",
@@ -127,7 +127,7 @@ func TestCheckAndApply(t *testing.T) {
 
 func TestCheckUpToDate(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/tokajer/gdrive-sync/releases", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/tokajer/tdrive-sync/releases", func(w http.ResponseWriter, r *http.Request) {
 		rels := []ghRelease{{TagName: "v0.1.0", Assets: []asset{{Name: "x-x86_64.AppImage", URL: "u", Size: 1}}}}
 		_ = json.NewEncoder(w).Encode(rels)
 	})

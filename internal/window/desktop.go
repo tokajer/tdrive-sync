@@ -7,7 +7,7 @@ import (
 
 // InstallDesktopEntry writes a user-scope .desktop file and the app icon into
 // ~/.local/share so the Wayland compositor can associate the settings window
-// (whose app_id is "gdrive-sync") with its icon. On Wayland a GTK3 app cannot
+// (whose app_id is "tdrive-sync") with its icon. On Wayland a GTK3 app cannot
 // hand a per-window icon to the compositor, so this desktop-file match is the
 // only reliable way to get the logo into the titlebar / taskbar / overview.
 //
@@ -27,7 +27,7 @@ func InstallDesktopEntry() error {
 	if err := os.MkdirAll(iconDir, 0o755); err != nil {
 		return err
 	}
-	if err := writeIfChanged(filepath.Join(iconDir, "gdrive-sync.svg"), iconSVG); err != nil {
+	if err := writeIfChanged(filepath.Join(iconDir, "tdrive-sync.svg"), iconSVG); err != nil {
 		return err
 	}
 
@@ -37,21 +37,21 @@ func InstallDesktopEntry() error {
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return err
 	}
-	// The file id ("gdrive-sync") must equal the window's Wayland app_id for the
+	// The file id ("tdrive-sync") must equal the window's Wayland app_id for the
 	// compositor to match them; StartupWMClass covers X11 as well.
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
-		"Name=Google Drive Sync\n" +
+		"Name=TDrive Sync\n" +
 		"GenericName=Cloud-Synchronisation\n" +
 		"Comment=Google Drive mit dem Rechner synchronisieren\n" +
 		"Exec=\"" + exec + "\"\n" +
-		"Icon=gdrive-sync\n" +
+		"Icon=tdrive-sync\n" +
 		"Terminal=false\n" +
 		"Categories=Network;FileTransfer;\n" +
 		"Keywords=google;drive;sync;cloud;backup;\n" +
 		"StartupNotify=false\n" +
-		"StartupWMClass=gdrive-sync\n"
-	return writeIfChanged(filepath.Join(appDir, "gdrive-sync.desktop"), []byte(entry))
+		"StartupWMClass=tdrive-sync\n"
+	return writeIfChanged(filepath.Join(appDir, "tdrive-sync.desktop"), []byte(entry))
 }
 
 // InstallAutostart registers (or removes) an XDG autostart entry so the daemon
@@ -67,7 +67,7 @@ func InstallAutostart(enabled bool) error {
 		cfgHome = filepath.Join(home, ".config")
 	}
 	dir := filepath.Join(cfgHome, "autostart")
-	path := filepath.Join(dir, "gdrive-sync.desktop")
+	path := filepath.Join(dir, "tdrive-sync.desktop")
 
 	if !enabled {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -81,14 +81,14 @@ func InstallAutostart(enabled bool) error {
 	}
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
-		"Name=Google Drive Sync\n" +
+		"Name=TDrive Sync\n" +
 		"Comment=Google Drive beim Anmelden synchronisieren\n" +
 		"Exec=\"" + appExecPath() + "\" run\n" +
-		"Icon=gdrive-sync\n" +
+		"Icon=tdrive-sync\n" +
 		"Terminal=false\n" +
 		"Categories=Network;FileTransfer;\n" +
 		"StartupNotify=false\n" +
-		"StartupWMClass=gdrive-sync\n" +
+		"StartupWMClass=tdrive-sync\n" +
 		"X-GNOME-Autostart-enabled=true\n" +
 		"X-GNOME-Autostart-Delay=5\n"
 	return writeIfChanged(path, []byte(entry))
@@ -104,7 +104,7 @@ func appExecPath() string {
 	if e, err := os.Executable(); err == nil {
 		return e
 	}
-	return "gdrive-sync"
+	return "tdrive-sync"
 }
 
 // writeIfChanged writes data to path only when it differs from the current

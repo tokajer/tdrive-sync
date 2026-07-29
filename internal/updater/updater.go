@@ -23,7 +23,7 @@ import (
 // GitHub repository the releases are published under.
 const (
 	defaultOwner = "tokajer"
-	defaultRepo  = "gdrive-sync"
+	defaultRepo  = "tdrive-sync"
 	apiBase      = "https://api.github.com"
 )
 
@@ -249,7 +249,7 @@ func (u *Updater) download(ctx context.Context, a asset, target string) (string,
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "gdrive-sync-updater")
+	req.Header.Set("User-Agent", "tdrive-sync-updater")
 	req.Header.Set("Accept", "application/octet-stream")
 	resp, err := u.client.Do(req)
 	if err != nil {
@@ -261,7 +261,7 @@ func (u *Updater) download(ctx context.Context, a asset, target string) (string,
 	}
 
 	dir := filepath.Dir(target)
-	tmp, err := os.CreateTemp(dir, ".gdrive-sync-update-*.AppImage")
+	tmp, err := os.CreateTemp(dir, ".tdrive-sync-update-*.AppImage")
 	if err != nil {
 		return "", fmt.Errorf("Zielordner nicht beschreibbar: %w", err)
 	}
@@ -324,7 +324,7 @@ func (u *Updater) fetchReleases(ctx context.Context) ([]ghRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "gdrive-sync-updater")
+	req.Header.Set("User-Agent", "tdrive-sync-updater")
 	resp, err := u.client.Do(req)
 	if err != nil {
 		return nil, err

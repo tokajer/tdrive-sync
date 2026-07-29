@@ -98,7 +98,7 @@ func Dir() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	dir := filepath.Join(base, "gdrive-sync")
+	dir := filepath.Join(base, "tdrive-sync")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -217,7 +217,7 @@ func StateDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	dir := filepath.Join(base, "gdrive-sync")
+	dir := filepath.Join(base, "tdrive-sync")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

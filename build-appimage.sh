@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the gdrive-sync AppImage.
+# Builds the tdrive-sync AppImage.
 #
 #   ./build-appimage.sh
 #
@@ -33,11 +33,11 @@ if [ -z "${VERSION:-}" ]; then
 fi
 echo ">> Version: $VERSION"
 
-echo ">> Baue gdrive-sync (Go)…"
+echo ">> Baue tdrive-sync (Go)…"
 # cgo wird für das native Einstellungs-Fenster (WebKitGTK via dlopen) benötigt.
 CGO_ENABLED=1 "$GO" build -trimpath \
   -ldflags "-s -w -X main.version=${VERSION}" \
-  -o "$BUILD/gdrive-sync" ./cmd/gdrive-sync
+  -o "$BUILD/tdrive-sync" ./cmd/tdrive-sync
 
 # --- rclone ---
 RCLONE_BIN="${RCLONE_BIN:-$BUILD/rclone}"
@@ -65,24 +65,24 @@ echo ">> Baue AppDir…"
 APPDIR="$BUILD/AppDir"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" \
-         "$APPDIR/usr/lib/gdrive-sync" \
+         "$APPDIR/usr/lib/tdrive-sync" \
          "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 
-cp "$BUILD/gdrive-sync"              "$APPDIR/usr/bin/gdrive-sync"
-cp "$RCLONE_BIN"                     "$APPDIR/usr/lib/gdrive-sync/rclone"
+cp "$BUILD/tdrive-sync"              "$APPDIR/usr/bin/tdrive-sync"
+cp "$RCLONE_BIN"                     "$APPDIR/usr/lib/tdrive-sync/rclone"
 cp "$ROOT/packaging/AppRun"          "$APPDIR/AppRun"
-chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/gdrive-sync" "$APPDIR/usr/lib/gdrive-sync/rclone"
+chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/tdrive-sync" "$APPDIR/usr/lib/tdrive-sync/rclone"
 
 # The app logo is the single source of truth in internal/window/ (embedded into
 # the binary for the settings window); reuse the very same file as the AppImage
 # icon so both always match.
 ICON="$ROOT/internal/window/icon.svg"
-cp "$ROOT/packaging/gdrive-sync.desktop" "$APPDIR/gdrive-sync.desktop"
-cp "$ROOT/packaging/gdrive-sync.desktop" "$APPDIR/usr/share/applications/gdrive-sync.desktop"
-cp "$ICON"                               "$APPDIR/gdrive-sync.svg"
-cp "$ICON"                               "$APPDIR/usr/share/icons/hicolor/scalable/apps/gdrive-sync.svg"
-ln -sf gdrive-sync.svg "$APPDIR/.DirIcon"
+cp "$ROOT/packaging/tdrive-sync.desktop" "$APPDIR/tdrive-sync.desktop"
+cp "$ROOT/packaging/tdrive-sync.desktop" "$APPDIR/usr/share/applications/tdrive-sync.desktop"
+cp "$ICON"                               "$APPDIR/tdrive-sync.svg"
+cp "$ICON"                               "$APPDIR/usr/share/icons/hicolor/scalable/apps/tdrive-sync.svg"
+ln -sf tdrive-sync.svg "$APPDIR/.DirIcon"
 
 # --- build the AppImage ---
 echo ">> Baue AppImage…"

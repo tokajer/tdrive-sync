@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
-  <title>gdrive-sync</title>
+  <title>tdrive-sync</title>
   <path d="M 142.12 200.64 A 74.00 74.00 0 0 0 201.99 129.29" fill="none" stroke="#f5b301" stroke-width="30.0" stroke-linecap="round"/>
   <path d="M 201.99 129.29 A 74.00 74.00 0 0 0 148.40 56.87" fill="none" stroke="#ea4d3d" stroke-width="30.0" stroke-linecap="round"/>
   <path d="M 124.13 54.10 L 154.19 36.68 L 142.61 77.05 Z" fill="#ea4d3d"/>

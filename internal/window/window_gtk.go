@@ -95,7 +95,7 @@ static int run_window(const char* title, const char* url, const char* icon) {
 
 	// Set the Wayland app_id before the display connection is made so the
 	// compositor can associate the window with the app (and its .desktop icon).
-	if (p_set_prgname) p_set_prgname("gdrive-sync");
+	if (p_set_prgname) p_set_prgname("tdrive-sync");
 
 	if (!p_init_check(0, 0)) return 10; // no display / init failed
 

@@ -16,7 +16,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
-	"gdrive-sync/internal/manager"
+	"tdrive-sync/internal/manager"
 )
 
 const (
@@ -116,13 +116,13 @@ func (s *snItem) propSpec() map[string]map[string]*prop.Prop {
 	return map[string]map[string]*prop.Prop{
 		sniIface: {
 			"Category":   {Value: "ApplicationStatus", Writable: false},
-			"Id":         {Value: "gdrive-sync", Writable: false},
-			"Title":      {Value: "Google Drive Sync", Writable: false},
+			"Id":         {Value: "tdrive-sync", Writable: false},
+			"Title":      {Value: "TDrive Sync", Writable: false},
 			"Status":     {Value: "Active", Writable: false},
 			"WindowId":   {Value: int32(0), Writable: false},
 			"IconName":   {Value: "", Writable: false},
 			"IconPixmap": {Value: greyFrame(), Writable: false},
-			"ToolTip":    {Value: makeToolTip("Google Drive Sync", "Nicht angemeldet"), Writable: false},
+			"ToolTip":    {Value: makeToolTip("TDrive Sync", "Nicht angemeldet"), Writable: false},
 			"ItemIsMenu": {Value: true, Writable: false},
 			"Menu":       {Value: dbus.ObjectPath(menuPath), Writable: false},
 		},
@@ -159,7 +159,7 @@ func (s *snItem) update(st manager.Status) {
 	s.mu.Unlock()
 
 	if msgChanged && s.props != nil {
-		s.props.SetMust(sniIface, "ToolTip", makeToolTip("Google Drive Sync", tip))
+		s.props.SetMust(sniIface, "ToolTip", makeToolTip("TDrive Sync", tip))
 		if s.conn != nil {
 			_ = s.conn.Emit(sniPath, sniIface+".NewToolTip")
 		}

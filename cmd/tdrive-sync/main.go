@@ -1,4 +1,4 @@
-// Command gdrive-sync is a Google Drive sync client with a tray icon and a local
+// Command tdrive-sync is a Google Drive sync client with a tray icon and a local
 // settings UI, modelled on the Windows Google Drive client. It uses a bundled
 // rclone binary as its sync engine.
 package main
@@ -17,15 +17,15 @@ import (
 	"syscall"
 	"time"
 
-	"gdrive-sync/internal/config"
-	"gdrive-sync/internal/logbuf"
-	"gdrive-sync/internal/logfile"
-	"gdrive-sync/internal/manager"
-	"gdrive-sync/internal/notify"
-	"gdrive-sync/internal/tray"
-	"gdrive-sync/internal/updater"
-	"gdrive-sync/internal/webui"
-	"gdrive-sync/internal/window"
+	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/logbuf"
+	"tdrive-sync/internal/logfile"
+	"tdrive-sync/internal/manager"
+	"tdrive-sync/internal/notify"
+	"tdrive-sync/internal/tray"
+	"tdrive-sync/internal/updater"
+	"tdrive-sync/internal/webui"
+	"tdrive-sync/internal/window"
 )
 
 // version is injected at build time via -ldflags "-X main.version=<tag>".
@@ -48,21 +48,21 @@ func main() {
 	case "status":
 		cliStatus()
 	case "version", "--version", "-v":
-		fmt.Println("gdrive-sync", version)
+		fmt.Println("tdrive-sync", version)
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Print(`gdrive-sync – Google-Drive-Synchronisation
+	fmt.Print(`tdrive-sync – Google-Drive-Synchronisation
 
 Verwendung:
-  gdrive-sync [run]     Daemon mit Tray-Icon und Einstellungs-Fenster starten (Standard)
-  gdrive-sync login     Google-Konto in der Konsole verbinden (headless)
-  gdrive-sync open      Einstellungs-Fenster öffnen
-  gdrive-sync status    Aktuellen Status anzeigen
-  gdrive-sync version   Version anzeigen
+  tdrive-sync [run]     Daemon mit Tray-Icon und Einstellungs-Fenster starten (Standard)
+  tdrive-sync login     Google-Konto in der Konsole verbinden (headless)
+  tdrive-sync open      Einstellungs-Fenster öffnen
+  tdrive-sync status    Aktuellen Status anzeigen
+  tdrive-sync version   Version anzeigen
 `)
 }
 
@@ -107,7 +107,7 @@ func runDaemon() {
 
 	logs := logbuf.New(1000)
 	logf := logs.Logf
-	notifier := notify.NewDBus("Google Drive Sync", "gdrive-sync")
+	notifier := notify.NewDBus("TDrive Sync", "tdrive-sync")
 
 	mgr, err := manager.New(cfg, notifier, logf)
 	if err != nil {
@@ -197,7 +197,7 @@ func runUpdateChecks(ctx context.Context, upd *updater.Updater, notifier notify.
 			logf("Update-Prüfung fehlgeschlagen: %v", err)
 		} else if rel != nil && rel.Version != lastNotified {
 			lastNotified = rel.Version
-			notifier.Notify("Google Drive Sync", "Update verfügbar: "+rel.Tag+" – im Einstellungs-Fenster installieren")
+			notifier.Notify("TDrive Sync", "Update verfügbar: "+rel.Tag+" – im Einstellungs-Fenster installieren")
 		}
 		if waitOrDone(ctx, 6*time.Hour) {
 			return
@@ -261,7 +261,7 @@ func cliLogin() {
 func openWindowCmd() {
 	cfg := loadOrExit()
 	url := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort)
-	if err := window.Open("Google Drive Sync", url); err != nil {
+	if err := window.Open("TDrive Sync", url); err != nil {
 		log.Printf("Fenster konnte nicht geöffnet werden: %v", err)
 		os.Exit(1)
 	}
@@ -312,7 +312,7 @@ func exeName() string {
 	if exe, err := os.Executable(); err == nil {
 		return exe
 	}
-	return "gdrive-sync"
+	return "tdrive-sync"
 }
 
 func cliStatus() {

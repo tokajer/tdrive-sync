@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gdrive-sync/internal/config"
+	"tdrive-sync/internal/config"
 )
 
 // conflictMarker is the substring rclone bisync puts into the name of a

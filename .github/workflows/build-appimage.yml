@@ -35,7 +35,7 @@ jobs:
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gdrive-sync-appimage
+          name: tdrive-sync-appimage
           path: dist/*.AppImage
           if-no-files-found: error
 

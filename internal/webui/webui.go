@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"gdrive-sync/internal/config"
-	"gdrive-sync/internal/logbuf"
-	"gdrive-sync/internal/manager"
-	"gdrive-sync/internal/updater"
-	"gdrive-sync/internal/window"
+	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/logbuf"
+	"tdrive-sync/internal/manager"
+	"tdrive-sync/internal/updater"
+	"tdrive-sync/internal/window"
 )
 
 //go:embed index.html

@@ -30,7 +30,7 @@ func (m *Manager) runStream(ctx context.Context) {
 		if m.waitMountReady(ctx, 40*time.Second) {
 			m.setState(StateIdle, "Auf dem neuesten Stand")
 			if !firstReady {
-				m.notifier.Notify("Google Drive Sync", "Laufwerk bereit unter "+mp)
+				m.notifier.Notify("TDrive Sync", "Laufwerk bereit unter "+mp)
 				firstReady = true
 			}
 			go m.warmOffline(ctx)
@@ -122,10 +122,10 @@ func (m *Manager) runMirror(ctx context.Context) {
 			failures++
 			if failures >= maxMirrorFailures {
 				m.setState(StateError, "Wiederholte Fehler – Auto-Wiederherstellung beim nächsten Lauf")
-				m.notifier.Notify("Google Drive Sync", "Wiederholte Synchronisierungsfehler – automatische Wiederherstellung folgt")
+				m.notifier.Notify("TDrive Sync", "Wiederholte Synchronisierungsfehler – automatische Wiederherstellung folgt")
 			} else {
 				m.setState(StateError, "Synchronisierungsfehler – neuer Versuch folgt")
-				m.notifier.Notify("Google Drive Sync", "Synchronisierungsfehler – wird erneut versucht")
+				m.notifier.Notify("TDrive Sync", "Synchronisierungsfehler – wird erneut versucht")
 			}
 		}
 

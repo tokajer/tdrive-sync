@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"gdrive-sync/internal/config"
+	"tdrive-sync/internal/config"
 )
 
 // Client drives a single rclone binary against our private config file.
@@ -26,11 +26,11 @@ type Client struct {
 }
 
 // FindBinary locates the rclone executable. Search order:
-//  1. $GDRIVE_RCLONE
+//  1. $TDRIVE_RCLONE
 //  2. next to our own executable (how the AppImage ships it)
 //  3. $PATH
 func FindBinary() (string, error) {
-	if p := os.Getenv("GDRIVE_RCLONE"); p != "" {
+	if p := os.Getenv("TDRIVE_RCLONE"); p != "" {
 		if isExec(p) {
 			return p, nil
 		}
@@ -39,7 +39,7 @@ func FindBinary() (string, error) {
 		dir := filepath.Dir(exe)
 		for _, cand := range []string{
 			filepath.Join(dir, "rclone"),
-			filepath.Join(dir, "..", "lib", "gdrive-sync", "rclone"),
+			filepath.Join(dir, "..", "lib", "tdrive-sync", "rclone"),
 		} {
 			if isExec(cand) {
 				return cand, nil
@@ -49,7 +49,7 @@ func FindBinary() (string, error) {
 	if p, err := exec.LookPath("rclone"); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("rclone binary not found (set $GDRIVE_RCLONE or install rclone)")
+	return "", fmt.Errorf("rclone binary not found (set $TDRIVE_RCLONE or install rclone)")
 }
 
 func isExec(p string) bool {

@@ -1,4 +1,4 @@
-module gdrive-sync
+module tdrive-sync
 
 go 1.23
 

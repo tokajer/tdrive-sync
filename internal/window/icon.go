@@ -21,7 +21,7 @@ func iconPath() string {
 	if err != nil {
 		return ""
 	}
-	dir = filepath.Join(dir, "gdrive-sync")
+	dir = filepath.Join(dir, "tdrive-sync")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ""
 	}

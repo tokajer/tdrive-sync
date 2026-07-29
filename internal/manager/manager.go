@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"gdrive-sync/internal/config"
-	"gdrive-sync/internal/notify"
-	"gdrive-sync/internal/rclone"
+	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/notify"
+	"tdrive-sync/internal/rclone"
 )
 
 // State is a coarse sync state used for the tray icon and UI.
@@ -84,7 +84,7 @@ func New(cfg *config.Config, notifier notify.Notifier, logf func(string, ...any)
 	if err != nil {
 		return nil, fmt.Errorf("RC-Zugangsdaten konnten nicht erzeugt werden: %w", err)
 	}
-	rcUser := "gdrive-sync"
+	rcUser := "tdrive-sync"
 	m := &Manager{
 		cfg:         cfg,
 		rc:          rc,
@@ -122,7 +122,7 @@ func cacheDir() string {
 	if err != nil {
 		base = os.TempDir()
 	}
-	d := filepath.Join(base, "gdrive-sync", "vfs")
+	d := filepath.Join(base, "tdrive-sync", "vfs")
 	_ = os.MkdirAll(d, 0o700)
 	return d
 }
@@ -272,7 +272,7 @@ func (m *Manager) Login(ctx context.Context, onLine func(string)) error {
 	m.mu.Lock()
 	m.status.Account = email
 	m.mu.Unlock()
-	m.notifier.Notify("Google Drive Sync", "Angemeldet als "+email)
+	m.notifier.Notify("TDrive Sync", "Angemeldet als "+email)
 	m.startMode()
 	return nil
 }

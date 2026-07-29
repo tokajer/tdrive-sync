@@ -1,4 +1,4 @@
-# Google Drive Sync
+# TDrive Sync
 
 Ein Google-Drive-Synchronisationsclient für Linux – funktional angelehnt an den
 Windows-Client von Google Drive. Er läuft als Hintergrunddienst mit **Tray-Icon**,
@@ -100,7 +100,7 @@ Ein erneuter Start bei bereits laufendem Dienst öffnet einfach die Einstellunge
 
 Der Dienst richtet sich **automatisch** für den Start beim Anmelden ein: Beim
 ersten Start wird ein XDG-Autostart-Eintrag unter
-`~/.config/autostart/gdrive-sync.desktop` angelegt (verweist auf den AppImage-/
+`~/.config/autostart/tdrive-sync.desktop` angelegt (verweist auf den AppImage-/
 Programm-Pfad). Abschalten oder wieder aktivieren lässt sich das jederzeit über
 den Schalter **„Beim Anmelden automatisch starten"** im Einstellungs-Fenster.
 
@@ -108,7 +108,7 @@ den Schalter **„Beim Anmelden automatisch starten"** im Einstellungs-Fenster.
 
 Die AppImage kann sich selbst aktualisieren. Der Dienst prüft **beim Start** und
 danach in Abständen die
-[GitHub-Releases](https://github.com/tokajer/gdrive-sync/releases) des Projekts:
+[GitHub-Releases](https://github.com/tokajer/tdrive-sync/releases) des Projekts:
 
 - Ist eine neuere Version verfügbar, erscheint im Einstellungs-Fenster ein
   Hinweis mit Button **„Jetzt aktualisieren"** und eine Desktop-Benachrichtigung.
@@ -136,14 +136,14 @@ Abschalten: `update_check_disabled: true` in der `config.yaml`.
   Cinnamon u. a. bringen das mit. Unter **GNOME** ist die Erweiterung
   *AppIndicator and KStatusNotifierItem Support* nötig. Ohne Tray-Host läuft der
   Dienst trotzdem – das Einstellungs-Fenster erreichst du dann über
-  `gdrive-sync open`.
+  `tdrive-sync open`.
 
 ## Eigene Google-OAuth-Zugangsdaten (später)
 
 Standardmäßig werden die in rclone eingebauten Google-Zugangsdaten verwendet –
 sofort startklar für den privaten Gebrauch. Wenn das Projekt wächst und höhere
 Limits / eigenes Branding gewünscht sind, genügt es, in der Konfigurationsdatei
-`~/.config/gdrive-sync/config.yaml` die eigenen Werte einzutragen:
+`~/.config/tdrive-sync/config.yaml` die eigenen Werte einzutragen:
 
 ```yaml
 google:
@@ -157,7 +157,7 @@ Typ „Desktop", Drive-API aktivieren).
 
 ## Konfiguration
 
-Alle Einstellungen liegen unter `~/.config/gdrive-sync/`:
+Alle Einstellungen liegen unter `~/.config/tdrive-sync/`:
 
 - `config.yaml` – App-Einstellungen (Modus, Ordner, Offline-Pfade, Intervall,
   Konfliktmodus, Autostart, Port, OAuth)
@@ -174,18 +174,18 @@ update_prerelease: false     # true = auch Vorabversionen (Prereleases) anbieten
 update_check_disabled: false # true = keine automatische Update-Prüfung
 ```
 
-Laufzeitdaten liegen unter `~/.local/state/gdrive-sync/` (bzw. `$XDG_STATE_HOME`):
+Laufzeitdaten liegen unter `~/.local/state/tdrive-sync/` (bzw. `$XDG_STATE_HOME`):
 
 - `status.json` – aktueller Status für Monitoring (JSON-Status-API)
-- `logs/gdrive-sync-JJJJ-MM-TT.log` – tägliche Logdateien, 7 Tage Aufbewahrung
+- `logs/tdrive-sync-JJJJ-MM-TT.log` – tägliche Logdateien, 7 Tage Aufbewahrung
 
-Der VFS-/bisync-Cache liegt unter `~/.cache/gdrive-sync/` (u. a. `bisync/` mit
+Der VFS-/bisync-Cache liegt unter `~/.cache/tdrive-sync/` (u. a. `bisync/` mit
 Arbeits- und Sperrdateien).
 
 ## Architektur
 
 ```
-cmd/gdrive-sync      Einstiegspunkt (Daemon, CLI, Single-Instance)
+cmd/tdrive-sync      Einstiegspunkt (Daemon, CLI, Single-Instance)
 internal/config      Laden/Speichern der YAML-Konfiguration
 internal/rclone      rclone-Wrapper (Login, mount, bisync, RC-API, Listing)
 internal/manager     Sync-Manager: Modus-Steuerung, Status, Offline-Pinning,
