@@ -36,6 +36,7 @@ var catalogEN = map[string]string{
 	"notify.repeated_errors":  "Repeated sync errors – automatic recovery follows",
 	"notify.sync_error_retry": "Sync error – retrying",
 	"notify.update_available": "Update available: %s – install it in the settings window",
+	"notify.space_freed":      "Freed %s of disk space",
 
 	// -------- tray menu --------
 	"tray.not_signed_in": "Not signed in",

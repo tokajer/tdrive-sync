@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Description": "Marks Google Drive files as streamed or available offline",
+        "Description[de]": "Kennzeichnet Google-Drive-Dateien als gestreamt oder offline verfügbar",
+        "Id": "tdrivesyncoverlay",
+        "License": "MIT",
+        "Name": "TDrive Sync",
+        "Version": "1"
+    }
+}

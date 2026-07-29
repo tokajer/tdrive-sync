@@ -32,6 +32,7 @@ var catalogDE = map[string]string{
 	"notify.repeated_errors":  "Wiederholte Synchronisierungsfehler – automatische Wiederherstellung folgt",
 	"notify.sync_error_retry": "Synchronisierungsfehler – wird erneut versucht",
 	"notify.update_available": "Update verfügbar: %s – im Einstellungs-Fenster installieren",
+	"notify.space_freed":      "%s Speicherplatz freigegeben",
 
 	// -------- tray menu --------
 	"tray.not_signed_in": "Nicht angemeldet",

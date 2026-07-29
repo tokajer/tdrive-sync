@@ -38,6 +38,10 @@ for everything else (including an unset locale).
 - **Make available offline:** in stream mode individual folders can be selected
   to be kept locally for good and stay usable offline – like “Available offline”
   in the Windows client.
+- **Indicator in the file manager (KDE/Dolphin):** every item in the sync folder
+  shows whether it is online only, downloaded, or pinned offline – plus context
+  menu entries for “Always keep offline” and “Free up space”, as in the Windows
+  OneDrive client. See [File manager indicator](#file-manager-indicator-kdedolphin).
 - **JSON status API:** an always-current `status.json` makes external monitoring
   easy (in addition to the HTTP API on 127.0.0.1).
 - **Log with rotation:** daily log files with 7-day retention; old files are
@@ -101,6 +105,15 @@ Further commands:
 ./TDrive_Sync-x86_64.AppImage status   # print the status
 ```
 
+Offline availability can also be steered from the console (the same paths the
+file manager's context menu uses):
+
+```bash
+tdrive-sync file-state ~/GoogleDrive/Documents/report.pdf   # print the state
+tdrive-sync offline on  ~/GoogleDrive/Documents             # keep offline
+tdrive-sync offline off ~/GoogleDrive/Documents             # free up space
+```
+
 Starting the app again while the service is already running simply opens the
 settings.
 
@@ -111,6 +124,78 @@ start an XDG autostart entry is created at
 `~/.config/autostart/tdrive-sync.desktop` (pointing at the AppImage / program
 path). It can be switched off and on again at any time via the
 **“Start automatically at login”** toggle in the settings window.
+
+## File manager indicator (KDE/Dolphin)
+
+Just like the Windows OneDrive client, Dolphin can mark every item in the sync
+folder with its availability:
+
+| Overlay                      | Meaning                                                           |
+|------------------------------|-------------------------------------------------------------------|
+| cloud with a download arrow  | **Online only** – opening it fetches it from Drive                 |
+| orange circle                | **Partly** downloaded (folder: something inside it is local)       |
+| green check mark             | **Available offline** – there is a complete local copy             |
+| star                         | **Always kept offline** – pinned, so it is kept local for good     |
+| sync arrows                  | pinned download running, or local changes still going up           |
+
+The context menu of items inside the sync folder gains up to two entries:
+**“Always keep offline”** and **“Free up space (keep online only)”**. Freeing
+space really deletes the local copy – the file stays visible and is downloaded
+again when it is next opened.
+
+In mirror mode everything is a real local copy anyway, so every item simply shows
+the green check mark and the context menu stays out of the way.
+
+### Installing it
+
+Dolphin's overlay icons come from a KIO plugin, and such a plugin has to be
+compiled against the KDE Frameworks build it is loaded into – a prebuilt binary
+inside the AppImage would break on the next Plasma update. It is therefore
+compiled once, on your machine, into your home directory:
+
+```bash
+tdrive-sync dolphin install   # compile and install
+tdrive-sync dolphin status    # is everything in place?
+tdrive-sync dolphin remove    # uninstall again
+```
+
+The build needs cmake, a C++ compiler and the Qt 6 / KDE Frameworks 6 headers.
+If something is missing, the matching command for your distribution is printed;
+on Fedora/Nobara it is
+
+```bash
+sudo dnf install cmake gcc-c++ extra-cmake-modules kf6-kio-devel qt6-qtbase-devel
+```
+
+The plugins land in `~/.local/lib64/qt6/plugins/kf6/{overlayicon,kfileitemaction}`
+and `QT_PLUGIN_PATH` is extended via `~/.config/environment.d/50-tdrive-sync.conf`
+(plus a Plasma startup script). Nothing outside your home directory is touched,
+so no root password is needed. Dolphin picks the plugin up the next time it
+starts; if the indicators stay missing, log out and back in once – or try it
+straight away without touching the session:
+
+```bash
+QT_PLUGIN_PATH=~/.local/lib64/qt6/plugins dolphin ~/GoogleDrive
+```
+
+### How the state is worked out
+
+An overlay is looked up for *every* visible item and must not block, and a stat on
+a stalled FUSE mount would freeze the file manager. So the plugin asks nobody:
+the daemon publishes `~/.local/state/tdrive-sync/file-manager.json` (mode, sync
+folder, cache location, pinned paths) and the plugin reads each item's state
+straight from rclone's VFS cache on disk:
+
+- no cache file at all → online only,
+- sparse cache file with only parts allocated → partly downloaded,
+- fully allocated, or no hole before the end of the file → available offline,
+- `Dirty` in rclone's metadata → local changes are still on their way up.
+
+Folders are approximated: they count as partly available as soon as anything
+below them is cached, because deciding “all of it is local” would mean walking
+the whole subtree on every single lookup. Changes that happen behind the file
+manager's back – a download finishing, a folder being pinned – are noticed within
+a few seconds and the overlay is refreshed.
 
 ## Automatic updates
 
@@ -196,6 +281,9 @@ internal/config      loading/saving the YAML configuration
 internal/rclone      rclone wrapper (login, mount, bisync, RC API, listing)
 internal/manager     sync manager: mode control, status, offline pinning,
                      inotify watcher, auto-recovery, conflict resolution
+internal/fmstate     per-file state for the file manager (published snapshot,
+                     VFS cache inspection, freeing cached copies)
+internal/dolphin     KDE integration: embedded KIO plugin sources + installer
 internal/i18n        message catalogs (German/English) + locale detection
 internal/webui       local control server (127.0.0.1) + embedded interface
 internal/window      native settings window (WebKitGTK via dlopen, no dev headers)
@@ -235,6 +323,16 @@ they are diagnostic.
 - On the **first** mirror reconciliation rclone performs a full `--resync`; that
   can take a while on large Drives.
 - Google Docs/Sheets/Slides show up as link files (as usual with rclone).
+- **Browsing downloads files:** with previews switched on, the file manager reads
+  files to make thumbnails, so items turn “available offline” simply from being
+  looked at. That is how an rclone mount works, not something the indicator does.
+- **Freeing space** removes rclone's cached copy directly, because rclone has no
+  remote-control command for it (`vfs/forget` only drops directory listings).
+  rclone notices the missing data and downloads it again on the next access.
+- The file-manager indicator currently covers **Dolphin/KDE** only. GNOME's
+  Nautilus would need its own extension; the state itself is desktop-agnostic
+  (`file-manager.json` plus `tdrive-sync file-state`), so adding one is
+  self-contained work.
 
 ## License
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/notify"
 	"tdrive-sync/internal/rclone"
@@ -63,6 +64,9 @@ type Manager struct {
 	cacheDir string
 	notifier notify.Notifier
 	logf     func(string, ...any)
+
+	// fmPub publishes the per-file state the file-manager integration renders.
+	fmPub fmstate.Publisher
 
 	mu        sync.Mutex
 	status    Status
@@ -187,6 +191,9 @@ func (m *Manager) stopMode() {
 // Shutdown stops all activity and cleans up the mount.
 func (m *Manager) Shutdown() {
 	m.stopMode()
+	// Tell the file-manager integration to stop showing indicators: without a
+	// mount there is nothing left to indicate.
+	m.publishFM(Status{})
 }
 
 // -------- user actions --------
@@ -324,8 +331,12 @@ func (m *Manager) SetGoogleCreds(creds config.GoogleCreds) error {
 	return nil
 }
 
-// SetOffline pins or unpins a Drive-relative path for offline availability
-// (stream mode only).
+// SetOffline pins a Drive-relative path for offline availability, or releases it
+// again (stream mode only).
+//
+// Releasing does more than drop the pin: it deletes the local copy, so the space
+// it used comes back – "free up space" in the file manager's context menu ends up
+// here too, for files that were merely downloaded rather than pinned.
 func (m *Manager) SetOffline(path string, on bool) error {
 	if on {
 		m.cfg.AddOffline(path)
@@ -344,11 +355,34 @@ func (m *Manager) SetOffline(path string, on bool) error {
 		defer cancel()
 		if on {
 			m.warmPath(ctx, path)
-		} else {
-			m.forgetPath(ctx, path)
+			return
 		}
+		if freed := m.freePath(ctx, path); freed > 0 {
+			m.logf("freed %s by releasing %s", humanBytes(freed), path)
+			m.notifier.Notify(appName, i18n.T("notify.space_freed", humanBytes(freed)))
+		}
+		m.broadcast()
 	}()
 	return nil
+}
+
+// humanBytes formats a byte count the way a file manager would.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n)
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	var suffix string
+	for _, u := range units {
+		value /= unit
+		suffix = u
+		if value < unit {
+			break
+		}
+	}
+	return fmt.Sprintf("%.1f %s", value, suffix)
 }
 
 // -------- status plumbing --------
@@ -398,5 +432,33 @@ func (m *Manager) broadcast() {
 	m.mu.Unlock()
 	for _, fn := range ls {
 		fn(cur)
+	}
+	m.publishFM(cur)
+}
+
+// fmInfo builds the snapshot the file-manager integration works from.
+func (m *Manager) fmInfo(s Status) fmstate.Info {
+	exe := os.Getenv("APPIMAGE")
+	if exe == "" {
+		exe, _ = os.Executable()
+	}
+	return fmstate.Info{
+		Active:   s.State != "" && s.State != StateDisconnected,
+		Mode:     string(m.cfg.Mode),
+		State:    string(s.State),
+		Root:     m.cfg.LocalDir,
+		CacheDir: m.cacheDir,
+		Remote:   m.cfg.RemoteName,
+		Exec:     exe,
+		Pinned:   append([]string{}, m.cfg.OfflinePaths...),
+	}
+}
+
+// publishFM hands the current picture to the file-manager integration (see
+// package fmstate). Writes that would not change the file are skipped inside the
+// publisher, so calling this on every broadcast is cheap.
+func (m *Manager) publishFM(s Status) {
+	if err := m.fmPub.Publish(m.fmInfo(s)); err != nil {
+		m.logf("could not publish the file-manager state: %v", err)
 	}
 }

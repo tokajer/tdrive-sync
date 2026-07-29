@@ -68,6 +68,13 @@ func (r *RC) Forget(ctx context.Context, dir string) error {
 	return err
 }
 
+// ForgetFile evicts a single file from the VFS cache. rclone distinguishes the
+// two by parameter name, so a file must not be passed to Forget.
+func (r *RC) ForgetFile(ctx context.Context, file string) error {
+	_, err := r.call(ctx, "vfs/forget", map[string]any{"file": file})
+	return err
+}
+
 // Stats holds a snapshot of transfer activity.
 type Stats struct {
 	Transferring int

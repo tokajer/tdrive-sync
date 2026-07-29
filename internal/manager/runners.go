@@ -207,8 +207,26 @@ func (m *Manager) warmPath(ctx context.Context, rel string) {
 	})
 }
 
-func (m *Manager) forgetPath(ctx context.Context, rel string) {
-	_ = m.ctl.Forget(ctx, rel)
+// freePath drops the local copy of a Drive-relative path and reports how much
+// disk space that freed.
+func (m *Manager) freePath(ctx context.Context, rel string) int64 {
+	freed, kept, err := m.fmInfo(m.Status()).Evict(rel)
+	if err != nil {
+		m.logf("could not free %s: %v", rel, err)
+		return 0
+	}
+	if kept > 0 {
+		m.logf("kept %d file(s) below %s: their changes have not reached Drive yet", kept, rel)
+	}
+	// Let rclone re-read the listing so the freed items show up as online-only.
+	// Files and directories go through different parameters.
+	fi, statErr := os.Stat(filepath.Join(m.cfg.LocalDir, rel))
+	if statErr == nil && !fi.IsDir() {
+		_ = m.ctl.ForgetFile(ctx, rel)
+	} else {
+		_ = m.ctl.Forget(ctx, rel)
+	}
+	return freed
 }
 
 // -------- helpers --------

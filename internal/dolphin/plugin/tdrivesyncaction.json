@@ -1,0 +1,17 @@
+{
+    "KPlugin": {
+        "Description": "Keep Google Drive files offline, or release them to online-only",
+        "Description[de]": "Google-Drive-Dateien offline behalten oder wieder nur online halten",
+        "Id": "tdrivesyncaction",
+        "License": "MIT",
+        "MimeTypes": [
+            "application/octet-stream",
+            "text/plain",
+            "inode/directory",
+            "all/all",
+            "all/allfiles"
+        ],
+        "Name": "TDrive Sync",
+        "Version": "1"
+    }
+}

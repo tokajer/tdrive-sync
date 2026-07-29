@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,11 +14,15 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/dolphin"
+	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/logfile"
@@ -55,6 +60,13 @@ func main() {
 		// Used by the xdg-open shim we put on rclone's PATH during login, and
 		// usable on its own for diagnosing a browser that will not open.
 		cliOpenURL()
+	case "offline":
+		// Used by the Dolphin context menu, and handy on its own.
+		cliOffline()
+	case "file-state":
+		cliFileState()
+	case "dolphin":
+		cliDolphin()
 	case "version", "--version", "-v":
 		fmt.Println("tdrive-sync", version)
 	default:
@@ -66,11 +78,19 @@ func usage() {
 	fmt.Print(`tdrive-sync – Google Drive synchronisation
 
 Usage:
-  tdrive-sync [run]     start the daemon with tray icon and settings window (default)
-  tdrive-sync login     connect a Google account from the console (headless)
-  tdrive-sync open      open the settings window
-  tdrive-sync status    print the current status
-  tdrive-sync version   print the version
+  tdrive-sync [run]              start the daemon with tray icon and settings window (default)
+  tdrive-sync login              connect a Google account from the console (headless)
+  tdrive-sync open               open the settings window
+  tdrive-sync status             print the current status
+  tdrive-sync version            print the version
+
+File manager integration (KDE/Dolphin):
+  tdrive-sync dolphin install    build and install the overlay-icon plugin
+  tdrive-sync dolphin status     show whether the plugin is in place
+  tdrive-sync dolphin remove     uninstall it again
+
+  tdrive-sync offline on|off <path>…   keep paths offline, or release them
+  tdrive-sync file-state <path>…       print the sync state of paths
 `)
 }
 
@@ -82,6 +102,130 @@ func cliOpenURL() {
 	if err := window.OpenExternal(os.Args[2]); err != nil {
 		log.Fatalf("could not open %s: %v", os.Args[2], err)
 	}
+}
+
+// cliOffline pins paths for offline use or releases them again. The Dolphin
+// context menu calls this with absolute paths inside the sync folder.
+func cliOffline() {
+	if len(os.Args) < 4 || (os.Args[2] != "on" && os.Args[2] != "off") {
+		log.Fatal("usage: tdrive-sync offline on|off <path>…")
+	}
+	on := os.Args[2] == "on"
+	cfg := loadOrExit()
+	if !instanceRunning(cfg.WebPort) {
+		log.Fatal("the daemon is not running.")
+	}
+	info, err := fmstate.Load()
+	if err != nil {
+		log.Fatalf("could not read the sync state: %v", err)
+	}
+	for _, arg := range os.Args[3:] {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			log.Printf("skipping %s: %v", arg, err)
+			continue
+		}
+		rel, ok := info.Rel(abs)
+		if !ok {
+			log.Printf("skipping %s: not inside %s", abs, info.Root)
+			continue
+		}
+		if err := postJSON(cfg.WebPort, "/api/offline", map[string]any{"path": rel, "on": on}); err != nil {
+			log.Printf("%s: %v", rel, err)
+			continue
+		}
+		if on {
+			fmt.Printf("keeping offline: %s\n", rel)
+		} else {
+			fmt.Printf("online only: %s\n", rel)
+		}
+	}
+}
+
+// cliFileState prints the sync state of paths (the same states the file-manager
+// indicator shows).
+func cliFileState() {
+	if len(os.Args) < 3 {
+		log.Fatal("usage: tdrive-sync file-state <path>…")
+	}
+	info, err := fmstate.Load()
+	if err != nil {
+		log.Fatalf("could not read the sync state: %v", err)
+	}
+	for _, arg := range os.Args[2:] {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			log.Printf("skipping %s: %v", arg, err)
+			continue
+		}
+		state := string(info.Resolve(abs))
+		if state == "" {
+			state = "-"
+		}
+		fmt.Printf("%-9s %s\n", state, abs)
+	}
+}
+
+// cliDolphin installs, inspects or removes the Dolphin integration.
+func cliDolphin() {
+	sub := "install"
+	if len(os.Args) > 2 {
+		sub = os.Args[2]
+	}
+	out := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
+	switch sub {
+	case "install":
+		if err := dolphin.Install(out); err != nil {
+			log.Fatalf("installation failed: %v", err)
+		}
+	case "remove", "uninstall":
+		if err := dolphin.Remove(out); err != nil {
+			log.Fatalf("removal failed: %v", err)
+		}
+	case "status":
+		r, err := dolphin.Status()
+		if err != nil {
+			log.Fatal(err)
+		}
+		out("overlay plugin:      %s", present(r.OverlayPresent, r.Paths.Overlay))
+		out("context menu plugin: %s", present(r.ActionPresent, r.Paths.Action))
+		out("environment entry:   %s", present(r.EnvFilePresent, r.Paths.EnvFile))
+		out("on QT_PLUGIN_PATH:   %t", r.OnPluginPath)
+		if r.OverlayPresent && !r.OnPluginPath {
+			out("")
+			out("The plugin is installed but not on this process's QT_PLUGIN_PATH.")
+			out("Log out and back in once, or start Dolphin with:")
+			out("  QT_PLUGIN_PATH=%q dolphin", r.Paths.PluginDir)
+		}
+	default:
+		log.Fatal("usage: tdrive-sync dolphin install|status|remove")
+	}
+}
+
+func present(ok bool, path string) string {
+	if ok {
+		return "installed – " + path
+	}
+	return "missing"
+}
+
+// postJSON sends a JSON body to the daemon's local API.
+func postJSON(port int, path string, body any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	return nil
 }
 
 func loadOrExit() *config.Config {
