@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
@@ -58,7 +59,7 @@ func Run(ctx context.Context, mgr *manager.Manager, act Actions, logf func(strin
 
 	menu := newMenu(act)
 	menu.conn = conn
-	item := &snItem{act: act}
+	item := &snItem{act: act, wake: make(chan struct{}, 1), desired: manager.StateDisconnected}
 
 	if err := conn.Export(item, sniPath, sniIface); err != nil {
 		return err
@@ -85,6 +86,9 @@ func Run(ctx context.Context, mgr *manager.Manager, act Actions, logf func(strin
 	}
 	logf("tray registered as %s", name)
 
+	// Drive the icon animation (spin / blink) in its own goroutine.
+	go item.animate(ctx)
+
 	// Reflect manager status into the icon, tooltip and menu.
 	mgr.Subscribe(func(st manager.Status) {
 		item.update(st)
@@ -102,12 +106,13 @@ type snItem struct {
 	props *prop.Properties
 	menu  *dbusMenu
 
-	mu    sync.Mutex
-	state manager.State
+	mu      sync.Mutex
+	desired manager.State
+	lastMsg string
+	wake    chan struct{} // signals animate() that desired changed
 }
 
 func (s *snItem) propSpec() map[string]map[string]*prop.Prop {
-	r, g, b := colorFor(manager.StateDisconnected)
 	return map[string]map[string]*prop.Prop{
 		sniIface: {
 			"Category":   {Value: "ApplicationStatus", Writable: false},
@@ -116,7 +121,7 @@ func (s *snItem) propSpec() map[string]map[string]*prop.Prop {
 			"Status":     {Value: "Active", Writable: false},
 			"WindowId":   {Value: int32(0), Writable: false},
 			"IconName":   {Value: "", Writable: false},
-			"IconPixmap": {Value: makeIcon(r, g, b), Writable: false},
+			"IconPixmap": {Value: greyFrame(), Writable: false},
 			"ToolTip":    {Value: makeToolTip("Google Drive Sync", "Nicht angemeldet"), Writable: false},
 			"ItemIsMenu": {Value: true, Writable: false},
 			"Menu":       {Value: dbus.ObjectPath(menuPath), Writable: false},
@@ -142,63 +147,111 @@ func (s *snItem) ContextMenu(x, y int32) *dbus.Error { return nil }
 func (s *snItem) Scroll(delta int32, orientation string) *dbus.Error { return nil }
 
 func (s *snItem) update(st manager.Status) {
+	tip := st.Message
+	if st.Account != "" {
+		tip = st.Account + " — " + st.Message
+	}
+
 	s.mu.Lock()
-	changed := s.state != st.State
-	s.state = st.State
+	s.desired = st.State
+	msgChanged := tip != s.lastMsg
+	s.lastMsg = tip
 	s.mu.Unlock()
 
-	if s.props != nil {
-		r, g, b := colorFor(st.State)
-		s.props.SetMust(sniIface, "IconPixmap", makeIcon(r, g, b))
-		tip := st.Message
-		if st.Account != "" {
-			tip = st.Account + " — " + st.Message
-		}
+	if msgChanged && s.props != nil {
 		s.props.SetMust(sniIface, "ToolTip", makeToolTip("Google Drive Sync", tip))
+		if s.conn != nil {
+			_ = s.conn.Emit(sniPath, sniIface+".NewToolTip")
+		}
 	}
-	if changed && s.conn != nil {
-		_ = s.conn.Emit(sniPath, sniIface+".NewIcon")
-		_ = s.conn.Emit(sniPath, sniIface+".NewToolTip")
+	// Wake the animator to re-evaluate the icon for the new state.
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 	if s.menu != nil {
 		s.menu.updateFromStatus(st)
 	}
 }
 
+// animate owns the tray IconPixmap: a static logo when idle, a grey logo when
+// disconnected/paused, the spinning logo while syncing, and a red blink on
+// error. It runs until ctx is cancelled.
+func (s *snItem) animate(ctx context.Context) {
+	cur := manager.State("") // force the first apply() to render
+
+	var ticker *time.Ticker
+	var tick <-chan time.Time
+	phase := 0
+
+	setIcon := func(px []iconPix) {
+		if s.props == nil {
+			return
+		}
+		s.props.SetMust(sniIface, "IconPixmap", px)
+		if s.conn != nil {
+			_ = s.conn.Emit(sniPath, sniIface+".NewIcon")
+		}
+	}
+	render := func() {
+		switch cur {
+		case manager.StateSyncing, manager.StateStarting:
+			f := spinFrames()
+			setIcon(f[phase%len(f)])
+		case manager.StateError:
+			f := errorFrames()
+			setIcon(f[phase%len(f)])
+		case manager.StateIdle:
+			setIcon(idleFrame())
+		default: // disconnected, paused
+			setIcon(greyFrame())
+		}
+	}
+	apply := func() {
+		s.mu.Lock()
+		want := s.desired
+		s.mu.Unlock()
+		if want == cur {
+			return
+		}
+		cur = want
+		phase = 0
+		if ticker != nil {
+			ticker.Stop()
+			ticker, tick = nil, nil
+		}
+		switch cur {
+		case manager.StateSyncing, manager.StateStarting:
+			ticker = time.NewTicker(70 * time.Millisecond)
+		case manager.StateError:
+			ticker = time.NewTicker(450 * time.Millisecond)
+		}
+		if ticker != nil {
+			tick = ticker.C
+		}
+		render()
+	}
+
+	apply()
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.wake:
+			apply()
+		case <-tick:
+			phase++
+			render()
+		}
+	}
+}
+
 func makeToolTip(title, sub string) []interface{} {
 	// (s a(iiay) s s) => iconName, iconPixmaps, title, description
 	return []interface{}{"", []iconPix{}, title, sub}
-}
-
-// makeIcon renders a 22x22 filled status circle as ARGB32 (network byte order).
-func makeIcon(r, g, b byte) []iconPix {
-	const n = 22
-	buf := make([]byte, n*n*4)
-	cx, cy, rad := 10.5, 10.5, 9.0
-	for y := 0; y < n; y++ {
-		for x := 0; x < n; x++ {
-			dx, dy := float64(x)-cx, float64(y)-cy
-			i := (y*n + x) * 4
-			if dx*dx+dy*dy <= rad*rad {
-				buf[i] = 0xff // A
-				buf[i+1] = r
-				buf[i+2] = g
-				buf[i+3] = b
-			}
-		}
-	}
-	return []iconPix{{W: n, H: n, Bytes: buf}}
-}
-
-func colorFor(s manager.State) (byte, byte, byte) {
-	switch s {
-	case manager.StateIdle:
-		return 0x18, 0x80, 0x38 // green
-	case manager.StateSyncing, manager.StateStarting:
-		return 0x1a, 0x73, 0xe8 // blue
-	case manager.StateError:
-		return 0xd9, 0x30, 0x25 // red
-	default:
-		return 0x9a, 0xa0, 0xa6 // grey
-	}
 }
