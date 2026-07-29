@@ -292,6 +292,24 @@ func (m *Manager) Logout(ctx context.Context) error {
 	return nil
 }
 
+// GoogleCreds returns the currently configured custom OAuth client credentials.
+func (m *Manager) GoogleCreds() config.GoogleCreds { return m.cfg.Google }
+
+// SetGoogleCreds stores custom OAuth client credentials for login. Passing an
+// empty GoogleCreds reverts to rclone's built-in credentials. The change only
+// affects the next login, so it must be done while signed out.
+func (m *Manager) SetGoogleCreds(creds config.GoogleCreds) error {
+	if m.cfg.Configured() {
+		return fmt.Errorf("bitte zuerst abmelden, um den OAuth-Client zu ändern")
+	}
+	m.cfg.Google = creds
+	if err := m.cfg.Save(); err != nil {
+		return err
+	}
+	m.rc.SetCreds(creds)
+	return nil
+}
+
 // SetOffline pins or unpins a Drive-relative path for offline availability
 // (stream mode only).
 func (m *Manager) SetOffline(path string, on bool) error {

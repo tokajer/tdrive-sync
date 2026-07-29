@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,6 +39,40 @@ const (
 type GoogleCreds struct {
 	ClientID     string `yaml:"client_id"`
 	ClientSecret string `yaml:"client_secret"`
+}
+
+// Configured reports whether a custom OAuth client is set (both fields present).
+func (g GoogleCreds) Configured() bool {
+	return g.ClientID != "" && g.ClientSecret != ""
+}
+
+// ParseGoogleCredsJSON extracts the OAuth client_id and client_secret from a
+// credentials file downloaded from the Google Cloud console. It accepts the
+// "Desktop app" / "Web app" wrapper ({"installed": {…}} / {"web": {…}}) as well
+// as a flat {"client_id": …, "client_secret": …} object.
+func ParseGoogleCredsJSON(data []byte) (GoogleCreds, error) {
+	type oauthClient struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	var raw struct {
+		Installed *oauthClient `json:"installed"`
+		Web       *oauthClient `json:"web"`
+		oauthClient
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return GoogleCreds{}, fmt.Errorf("JSON konnte nicht gelesen werden: %w", err)
+	}
+	pick := raw.oauthClient
+	if raw.Installed != nil {
+		pick = *raw.Installed
+	} else if raw.Web != nil {
+		pick = *raw.Web
+	}
+	if pick.ClientID == "" || pick.ClientSecret == "" {
+		return GoogleCreds{}, fmt.Errorf("client_id oder client_secret fehlen in der JSON-Datei")
+	}
+	return GoogleCreds{ClientID: pick.ClientID, ClientSecret: pick.ClientSecret}, nil
 }
 
 // Config is the persisted application state.

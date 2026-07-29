@@ -70,6 +70,11 @@ func New(remote string, creds config.GoogleCreds) (*Client, error) {
 	return &Client{bin: bin, conf: conf, remote: remote, creds: creds}, nil
 }
 
+// SetCreds updates the custom OAuth client used for the next Login. It has no
+// effect on a remote that already exists (the client is baked in at creation
+// time), so callers should only change it while signed out.
+func (c *Client) SetCreds(creds config.GoogleCreds) { c.creds = creds }
+
 // Bin returns the resolved rclone binary path.
 func (c *Client) Bin() string { return c.bin }
 

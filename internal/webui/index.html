@@ -78,7 +78,27 @@
   .clickable { cursor: pointer; text-decoration: underline dotted; }
   .loginbox { background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 13px; }
   .loginbox a { color: var(--accent); word-break: break-all; }
-  code { font-family: ui-monospace, monospace; }
+  code { font-family: ui-monospace, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .notice { background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  .notice b { display: block; margin-bottom: 4px; }
+  .step { margin-bottom: 6px; }
+  .steps { margin: 8px 0 4px; padding-left: 22px; }
+  .steps li { margin-bottom: 8px; }
+  .steps a { color: var(--accent); }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field label { font-size: 13px; font-weight: 600; }
+  input[type=text], input[type=password], textarea {
+    font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--fg); width: 100%;
+  }
+  input[type=text]:focus, input[type=password]:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { min-height: 80px; font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
+  .sep { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+  .setup-sub { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .credstate { font-size: 13px; margin: 4px 0 14px; }
+  .credstate.ok { color: var(--ok); }
+  .credstate.warn { color: var(--warn); }
+  .filerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 </style>
 </head>
 <body>
@@ -125,10 +145,67 @@
     </div>
   </div>
 
-  <!-- LOGIN (shown when not configured) -->
+  <!-- LOGIN / EINRICHTUNG (shown when not configured) -->
   <div class="card hidden" id="loginCard">
-    <h2>Anmeldung</h2>
-    <p class="muted">Melde dich mit deinem Google-Konto an. Es öffnet sich ein Browserfenster.</p>
+    <h2>Einrichtung</h2>
+
+    <div class="notice">
+      <b>Eigener Google-Zugang erforderlich</b>
+      <span class="muted">Google schaltet die gemeinsamen Zugangsdaten von rclone Ende 2026 ab. Damit die Anmeldung dauerhaft funktioniert, hinterlege einmalig deinen eigenen OAuth-Client. Das ist kostenlos und dauert wenige Minuten.</span>
+      <div style="margin-top:10px"><button id="btnGuide" style="padding:4px 10px">Anleitung anzeigen</button></div>
+    </div>
+
+    <div id="guide" class="hidden">
+      <ol class="steps">
+        <li>Öffne die <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console</a> und lege ein neues Projekt an (oder wähle ein bestehendes).</li>
+        <li>Aktiviere die <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Drive API</a> für das Projekt („Aktivieren“).</li>
+        <li>Richte den <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">OAuth-Zustimmungsbildschirm</a> ein: Nutzertyp <b>Extern</b>, App-Name und deine E-Mail als Support-Kontakt eintragen.</li>
+        <li>Setze den Veröffentlichungsstatus auf <b>„In Produktion“</b> (unter „Zielgruppe“). Sonst laufen die Anmeldungen alle 7&nbsp;Tage ab. Eine Google-Prüfung ist für den privaten Gebrauch nicht nötig.</li>
+        <li>Erstelle unter <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Anmeldedaten</a> → „Anmeldedaten erstellen“ → „OAuth-Client-ID“ einen Client vom Typ <b>Desktop-App</b>.</li>
+        <li>Lade die JSON-Datei herunter (Download-Symbol) oder kopiere <code>Client-ID</code> und <code>Client-Schlüssel</code>.</li>
+        <li>Importiere die Datei unten – oder füge die Werte manuell ein.</li>
+      </ol>
+    </div>
+
+    <hr class="sep">
+
+    <p class="setup-sub">1 · OAuth-Client hinterlegen</p>
+    <div id="credState" class="credstate warn">Wird geladen…</div>
+
+    <div class="filerow">
+      <input type="file" id="credFile" accept=".json,application/json">
+      <button id="btnImportFile">Datei importieren</button>
+    </div>
+
+    <div class="field">
+      <label for="credJson">…oder JSON-Inhalt einfügen</label>
+      <textarea id="credJson" placeholder='{ "installed": { "client_id": "…", "client_secret": "…" } }'></textarea>
+    </div>
+    <div class="row" style="margin-bottom:6px">
+      <button id="btnImportJson" class="primary">JSON importieren</button>
+      <span class="spacer"></span>
+      <button id="btnManualToggle" style="padding:4px 10px">Manuell eingeben</button>
+    </div>
+
+    <div id="manualCreds" class="hidden" style="margin-top:12px">
+      <div class="field">
+        <label for="clientId">Client-ID</label>
+        <input type="text" id="clientId" placeholder="…apps.googleusercontent.com" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="clientSecret">Client-Secret</label>
+        <input type="password" id="clientSecret" placeholder="GOCSPX-…" autocomplete="off">
+      </div>
+      <div class="row">
+        <button id="btnSaveCreds" class="primary">Speichern</button>
+        <button id="btnClearCreds" style="padding:4px 10px">Zurücksetzen</button>
+      </div>
+    </div>
+
+    <hr class="sep">
+
+    <p class="setup-sub">2 · Bei Google anmelden</p>
+    <p class="muted" style="margin-top:0">Danach mit deinem Google-Konto anmelden. Es öffnet sich ein Browserfenster.</p>
     <button id="btnLogin" class="primary">Bei Google anmelden</button>
     <div id="loginBox" class="loginbox hidden"></div>
   </div>
@@ -237,6 +314,7 @@ async function refreshStatus(){
 
     $('#btnPause').textContent = st.state==='paused' ? 'Fortsetzen' : 'Pausieren';
     $('#loginCard').classList.toggle('hidden', d.configured);
+    if(!d.configured) ensureCredsLoaded();
     $('#btnLogout').classList.toggle('hidden', !d.configured);
     $('#modeCard').classList.toggle('hidden', !d.configured);
     $('#offlineCard').classList.toggle('hidden', !d.configured || st.mode!=='stream');
@@ -311,6 +389,73 @@ function updateConflictBadge(n){
   else { b.classList.add('hidden'); }
 }
 function openConflicts(){ $('#conflictCard').scrollIntoView({behavior:'smooth', block:'start'}); }
+
+// --- setup / oauth credentials ---
+$('#btnGuide').onclick = ()=>{
+  const g = $('#guide'); const shown = g.classList.toggle('hidden');
+  $('#btnGuide').textContent = shown ? 'Anleitung anzeigen' : 'Anleitung ausblenden';
+};
+$('#btnManualToggle').onclick = ()=>{
+  const m = $('#manualCreds'); const shown = m.classList.toggle('hidden');
+  $('#btnManualToggle').textContent = shown ? 'Manuell eingeben' : 'Manuell ausblenden';
+};
+
+let credsLoaded = false;
+function ensureCredsLoaded(){ if(!credsLoaded){ credsLoaded = true; loadCreds(); } }
+async function loadCreds(){
+  try {
+    const d = await api('/api/google-creds');
+    setCredState(d.configured, d.client_id);
+    if(d.client_id) $('#clientId').value = d.client_id;
+  } catch(e){}
+}
+function setCredState(configured, clientId){
+  const el = $('#credState');
+  if(configured){
+    el.className = 'credstate ok';
+    el.textContent = '✓ Eigener OAuth-Client aktiv' + (clientId ? ' (' + clientId + ')' : '');
+  } else {
+    el.className = 'credstate warn';
+    el.textContent = '⚠ Noch kein eigener Client – es werden die Ende 2026 auslaufenden Standard-Zugangsdaten verwendet.';
+  }
+}
+async function importCredsJson(text){
+  if(!text || !text.trim()){ alert('Bitte zuerst eine JSON-Datei wählen oder den Inhalt einfügen.'); return; }
+  try {
+    const d = await post('/api/google-creds/import', {data: text});
+    setCredState(d.configured, d.client_id);
+    if(d.client_id) $('#clientId').value = d.client_id;
+    $('#credJson').value = '';
+    alert('OAuth-Client importiert. Du kannst dich jetzt anmelden.');
+  } catch(e){ alert('Import fehlgeschlagen: ' + e.message); }
+}
+$('#btnImportJson').onclick = ()=> importCredsJson($('#credJson').value);
+$('#credFile').onchange = ()=>{
+  const f = $('#credFile').files[0]; if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ()=> importCredsJson(String(reader.result));
+  reader.readAsText(f);
+};
+$('#btnImportFile').onclick = ()=> $('#credFile').click();
+$('#btnSaveCreds').onclick = async ()=>{
+  const client_id = $('#clientId').value.trim();
+  const client_secret = $('#clientSecret').value.trim();
+  if(!client_id || !client_secret){ alert('Bitte Client-ID und Client-Secret angeben.'); return; }
+  try {
+    const d = await post('/api/google-creds/save', {client_id, client_secret});
+    setCredState(d.configured, d.client_id);
+    $('#clientSecret').value = '';
+    alert('OAuth-Client gespeichert. Du kannst dich jetzt anmelden.');
+  } catch(e){ alert('Speichern fehlgeschlagen: ' + e.message); }
+};
+$('#btnClearCreds').onclick = async ()=>{
+  if(!confirm('Eigenen OAuth-Client entfernen und wieder die Standard-Zugangsdaten verwenden?')) return;
+  try {
+    const d = await post('/api/google-creds/save', {client_id:'', client_secret:''});
+    setCredState(d.configured, d.client_id);
+    $('#clientId').value = ''; $('#clientSecret').value = '';
+  } catch(e){ alert('Fehler: ' + e.message); }
+};
 
 // --- login ---
 $('#btnLogin').onclick = async ()=>{

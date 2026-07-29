@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +109,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	post("/api/login", s.handleLogin)
 	get("/api/login-status", s.handleLoginStatus)
 	post("/api/logout", s.handleLogout)
+	get("/api/google-creds", s.handleGoogleCreds)
+	post("/api/google-creds/save", s.handleGoogleCredsSave)
+	post("/api/google-creds/import", s.handleGoogleCredsImport)
 	get("/api/browse", s.handleBrowse)
 	post("/api/offline", s.handleOffline)
 	post("/api/open", s.handleOpen)
@@ -318,6 +322,62 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	writeJSON(w, resp)
+}
+
+// handleGoogleCreds reports the currently configured OAuth client. The secret is
+// never returned; only the (non-sensitive) client ID and a configured flag.
+func (s *Server) handleGoogleCreds(w http.ResponseWriter, r *http.Request) {
+	creds := s.mgr.GoogleCreds()
+	writeJSON(w, map[string]any{
+		"client_id":  creds.ClientID,
+		"configured": creds.Configured(),
+	})
+}
+
+// handleGoogleCredsSave stores manually entered client_id/client_secret. Sending
+// both empty reverts to rclone's built-in credentials.
+func (s *Server) handleGoogleCredsSave(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(body.ClientID)
+	secret := strings.TrimSpace(body.ClientSecret)
+	if (id == "") != (secret == "") {
+		http.Error(w, "Client-ID und Client-Secret müssen beide angegeben werden", http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetGoogleCreds(config.GoogleCreds{ClientID: id, ClientSecret: secret}); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "client_id": id, "configured": id != ""})
+}
+
+// handleGoogleCredsImport parses a credentials JSON downloaded from the Google
+// Cloud console (or pasted in) and stores the extracted client_id/client_secret.
+func (s *Server) handleGoogleCredsImport(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	creds, err := config.ParseGoogleCredsJSON([]byte(body.Data))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetGoogleCreds(creds); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "client_id": creds.ClientID, "configured": true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
