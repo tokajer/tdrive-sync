@@ -8,7 +8,11 @@
 /vendor/
 
 # Editor / tooling
-/.claude/
+# Ignore the contents, not the directory itself, so the skill below can be
+# re-included – git does not descend into an excluded directory.
+/.claude/*
+# The project skill is documentation and belongs in the repository.
+!/.claude/skills/
 /.vscode/
 /.idea/
 *.swp

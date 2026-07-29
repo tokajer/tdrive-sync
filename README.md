@@ -294,7 +294,12 @@ internal/logbuf      in-memory ring buffer for the log shown in the UI
 internal/logfile     day-rotating log file with 7-day retention
 packaging/           AppRun, desktop file, icon
 build-appimage.sh    build script
+scripts/check.sh     build + vet + tests, then report the state of this machine
 ```
+
+Working on the code? [REENTRY.md](REENTRY.md) walks through the process model, the
+data flow behind the file-manager indicator and the rclone behaviour worth knowing
+in advance; [TODO.md](TODO.md) lists the open work.
 
 **The sync modes in detail:**
 
