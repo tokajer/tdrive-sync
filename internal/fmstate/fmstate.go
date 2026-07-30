@@ -204,7 +204,7 @@ func (i Info) ResolveRel(rel string, isDir bool) State {
 		if pinned {
 			return Pinned
 		}
-		if _, err := os.Stat(i.DataPath(rel)); err == nil {
+		if dirHasData(i.DataPath(rel)) {
 			return Partial
 		}
 		return Cloud
@@ -228,6 +228,56 @@ func (i Info) ResolveRel(rel string, isDir bool) State {
 	default:
 		return Cached
 	}
+}
+
+// dirScanBudget caps how many cache entries dirHasData looks at. It runs from a
+// file manager's overlay lookup, which happens for every visible item, so the
+// answer has to stay cheap; a folder that really holds data hits the first one
+// immediately anyway.
+const dirScanBudget = 64
+
+// dirHasData reports whether a cache directory holds any downloaded data.
+//
+// The directory tree outlives the data in it: rclone creates the folders when it
+// first touches a file below them, freeing a single file leaves its parents
+// behind, and a file that was only opened stays a fully sparse placeholder.
+// Taking "the cache folder exists" for "something is local" would therefore leave
+// folders marked as partially offline long after the last byte was freed.
+func dirHasData(dir string) bool {
+	budget := dirScanBudget
+	queue := []string{dir}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		entries, err := os.ReadDir(cur)
+		if err != nil {
+			// A missing cache directory means nothing is local. Anything else is
+			// unreadable, and there the cautious answer is "there is data".
+			if os.IsNotExist(err) {
+				continue
+			}
+			return true
+		}
+		for _, e := range entries {
+			if budget <= 0 {
+				return true // out of budget: keep the answer we gave before
+			}
+			budget--
+			if e.IsDir() {
+				queue = append(queue, filepath.Join(cur, e.Name()))
+				continue
+			}
+			fi, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if fi.Size() > 0 && allocatedBytes(fi) == 0 {
+				continue // a placeholder rclone has not downloaded into yet
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // DataPath is where the cached content of a Drive-relative path lives.

@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,6 +55,31 @@ func TestGuard(t *testing.T) {
 					c.mutating, c.method, c.host, c.origin, w.Code, c.want)
 			}
 		})
+	}
+}
+
+// TestDolphinStatus checks the data the integration card renders from. It has to
+// answer on any desktop and with nothing installed – that is the state a fresh
+// user sees, and the card decides what to offer from these fields.
+func TestDolphinStatus(t *testing.T) {
+	s := testServer()
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:45677/api/dolphin", nil)
+	w := httptest.NewRecorder()
+	s.handleDolphin(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	for _, key := range []string{"kde", "job", "installed", "lines"} {
+		if _, ok := resp[key]; !ok {
+			t.Errorf("response has no %q field: %v", key, resp)
+		}
+	}
+	if resp["job"] != "" {
+		t.Errorf("job = %v, want no job running", resp["job"])
 	}
 }
 

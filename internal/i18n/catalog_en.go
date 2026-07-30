@@ -201,4 +201,31 @@ var catalogEN = map[string]string{
 	"ui.drive_root":             "🏠 Drive",
 	"ui.empty_folder":           "Empty folder",
 	"ui.offline":                "offline",
+	"ui.offline_parent":         "offline (parent folder)",
+
+	// -------- settings UI: file-manager integration (KDE/Dolphin) --------
+	"ui.dolphin":                "File manager (Dolphin)",
+	"ui.dolphin_hint":           "Marks every item in the sync folder with its state and adds “Keep offline” and “Free up space” to the context menu. The plugin is compiled on this computer because it has to match the installed KDE version.",
+	"ui.dolphin_not_installed":  "Not installed – Dolphin shows no sync symbols yet.",
+	"ui.dolphin_deps_missing":   "⚠ Not installed – the build requirements are missing (see below).",
+	"ui.dolphin_installed":      "✓ Installed and active.",
+	"ui.dolphin_restart_needed": "✓ Installed – restart Dolphin (close every window) so it loads the plugin. If the symbols stay missing, log out and back in once.",
+	"ui.dolphin_install":        "Install integration",
+	"ui.dolphin_reinstall":      "Rebuild",
+	"ui.dolphin_remove":         "Remove",
+	"ui.dolphin_installing":     "Compiling and installing the plugin…",
+	"ui.dolphin_removing":       "Removing…",
+	"ui.dolphin_failed":         "Failed:",
+	"ui.confirm_dolphin_remove": "Remove the Dolphin integration? The sync symbols in the file manager disappear.",
+
+	// -------- settings UI: Dolphin previews in the sync folder --------
+	"ui.dolphin_previews":          "Switch previews off in the sync folder (experimental)",
+	"ui.dolphin_previews_hint":     "A preview reads the whole file, and reading downloads it – browsing alone would fill your disk. This applies to the sync folder only; Dolphin keeps its previews everywhere else (it is switched to per-folder view properties for that). Experimental: Dolphin reads the setting when it opens a folder, it needs a restart, and the first look into a folder still downloads once.",
+	"ui.dolphin_previews_off_done": "Previews in the sync folder are off. Reload an open Dolphin window (F5) or reopen the folder.",
+	"ui.dolphin_previews_on_done":  "Previews in the sync folder are on again. Careful: looking at files downloads them.",
+
+	"ui.dolphin_previews_default":        "Also make “no previews” Dolphin's default (experimental)",
+	"ui.dolphin_previews_default_hint":   "Needed so that even the first look into a folder downloads nothing: Dolphin applies a folder's own setting only once its view is up. This default covers every folder without a setting of its own – outside the sync folder as well. Individual folders can still switch previews back on.",
+	"ui.dolphin_previews_default_done":   "Default set: no previews in folders without a setting of their own. Restart Dolphin once.",
+	"ui.dolphin_previews_default_undone": "Default taken back – Dolphin shows previews everywhere again.",
 }

@@ -17,6 +17,34 @@ client: a background daemon with a tray icon, a native settings window
 full local copy). The Go code owns configuration, state, the local HTTP control
 API, the desktop integration and everything the user sees.
 
+## Starter prompt
+
+Paste this at the start of a session and append the task. It keeps an assistant
+from re-deriving the architecture, re-running verifications and producing long
+reports – all of which cost time and tokens:
+
+```text
+Read .claude/skills/tdrive-sync/SKILL.md, REENTRY.md and TODO.md, run
+scripts/check.sh, and work from that – do not explore the tree and do not
+re-verify what those files already state.
+
+Rules for this repo:
+- Comments and identifiers English; user-visible strings via internal/i18n
+  (keep catalog_de.go and catalog_en.go in sync); gofmt before you finish.
+- A change to the file-state logic goes into internal/fmstate AND
+  internal/dolphin/plugin (fmstate_test.go is the specification).
+- Never stop or restart my running daemon to test something: use an isolated
+  instance with its own XDG_* directories and web_port.
+- When you are done: ./build-appimage.sh, install it over
+  ~/AppImages/tdrive_sync.appimage (stop the daemon first, keep a backup) and
+  restart the daemon detached. Rebuild the KIO plugin only if
+  internal/dolphin/plugin changed.
+- Screenshots only when I ask for a visual check. Answer briefly: what changed,
+  what was verified, what is left – no walls of text.
+
+Task:
+```
+
 ## Quick check before changing anything
 
 ```bash
@@ -108,6 +136,10 @@ This is the least obvious part of the codebase, so here is the whole chain:
    pinned, upload done).
 4. The **context-menu plugin** turns clicks into
    `tdrive-sync offline on|off <paths>`, which POSTs to the daemon's local API.
+5. Installing all this is a card in the settings window
+   (`/api/dolphin`, `/api/dolphin/install`, `/api/dolphin/remove`) as well as
+   `tdrive-sync dolphin install`. The card shows the build output because a
+   missing devel package is something only the user can fix.
 
 The same logic exists twice, deliberately: in Go
 ([internal/fmstate/fmstate.go](internal/fmstate/fmstate.go), used by the CLI and
@@ -141,9 +173,37 @@ used by Dolphin). **Change one, change the other**, and keep
   old environment – hence "log out and back in once".
 - **`extra-cmake-modules` is required**, not optional: `FindKF6.cmake` lives there,
   and KIO's own CMake config pulls in find modules from it.
+- **A cache directory outlives the data in it.** rclone creates
+  `vfs/<remote>/<folder>/` as soon as it touches one file below it, freeing a
+  single file leaves the parent folders behind, and a file that was merely opened
+  stays a fully sparse placeholder. "The cache folder exists" therefore does *not*
+  mean anything is local – `fmstate.dirHasData` (mirrored in the C++ plugin)
+  answers that with a deliberately bounded scan, because it runs inside an overlay
+  lookup.
+- **Offline pins are hierarchical.** A pinned folder pins everything below it, so
+  `config.AddOffline` drops redundant descendants and `RemoveOffline` drops the
+  whole subtree. Without that, releasing a folder was pointless: a leftover pin on
+  a file below it made the daemon download that file again seconds later, and the
+  folder went back to "partially offline".
 - **Browsing a folder downloads files.** File managers generate thumbnails, which
   reads files, which caches them. Items turn green just from being looked at.
-  That is how an rclone mount behaves, not something the indicator does.
+  That is how an rclone mount behaves, not something the indicator does. Measured:
+  a released folder that is on screen is fully back in the cache within 2–10 s,
+  pulled in by `kioworker … kf6/kio/thumbnail.so`. The switch against it is
+  `internal/dolphin/previews.go` – and it needs *two* settings, because Dolphin
+  ignores per-folder view properties while `GlobalViewProps` is at its default.
+  The per-folder file belongs in Dolphin's store under `~/.local/share/dolphin`,
+  never inside the sync folder: a `.directory` there would be uploaded to Drive –
+  and measured, Dolphin does not even read it there, it always uses the store
+  path. Its `Timestamp` must be newer than `ViewPropsTimestamp` in `dolphinrc`, or
+  Dolphin discards the file as outdated. **View properties are per folder and are
+  not inherited**, so the marker has to exist for every folder in the Drive;
+  `Manager.previewFolders` refreshes them every 30 minutes from
+  `rclone lsjson --dirs-only --recursive`. A folder's own properties arrive after
+  its view is up, so the first visit previews once anyway; only the *global*
+  view-properties default (`SetPreviewsDefault`, opt-in, reaches beyond the sync
+  folder) prevents that – measured: Dolphin honours that fallback even in
+  per-folder mode.
 - **The mount's RC API needs auth.** Credentials are random per daemon run and only
   exist in that process's environment, so an outside tool cannot drive it.
 

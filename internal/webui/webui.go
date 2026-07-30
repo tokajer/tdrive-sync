@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/manager"
@@ -45,6 +47,12 @@ type Server struct {
 	loginActive bool
 	loginLines  []string
 	loginErr    string
+	// The Dolphin integration is installed the same way the login runs: a job
+	// that takes a while and whose output the user has to see (a missing devel
+	// package is something only they can fix).
+	dolphinJob   string // "install", "remove" or "" while nothing runs
+	dolphinLines []string
+	dolphinErr   string
 }
 
 // New creates a settings server bound to 127.0.0.1 on the config's WebPort. upd
@@ -134,6 +142,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	post("/api/google-creds/import", s.handleGoogleCredsImport)
 	get("/api/browse", s.handleBrowse)
 	post("/api/offline", s.handleOffline)
+	get("/api/dolphin", s.handleDolphin)
+	post("/api/dolphin/install", s.handleDolphinInstall)
+	post("/api/dolphin/remove", s.handleDolphinRemove)
+	post("/api/dolphin/previews", s.handleDolphinPreviews)
+	post("/api/dolphin/previews-default", s.handleDolphinPreviewsDefault)
 	post("/api/open", s.handleOpen)
 	post("/api/open-logs", s.handleOpenLogs)
 	get("/api/logs", s.handleLogs)
@@ -424,11 +437,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		pinned[p] = true
 	}
 	type item struct {
-		Name    string `json:"name"`
-		Path    string `json:"path"`
-		IsDir   bool   `json:"is_dir"`
-		Size    int64  `json:"size"`
-		Offline bool   `json:"offline"`
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+		// Offline reports that the entry is kept offline, Inherited that this
+		// comes from a pinned parent folder rather than from the entry itself –
+		// releasing it individually is not possible then.
+		Offline   bool `json:"offline"`
+		Inherited bool `json:"inherited"`
 	}
 	items := make([]item, 0, len(entries))
 	for _, e := range entries {
@@ -436,12 +453,14 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if rel != "" {
 			full = rel + "/" + e.Path
 		}
+		offline := s.cfg.IsOffline(full)
 		items = append(items, item{
-			Name:    e.Name,
-			Path:    full,
-			IsDir:   e.IsDir,
-			Size:    e.Size,
-			Offline: pinned[full],
+			Name:      e.Name,
+			Path:      full,
+			IsDir:     e.IsDir,
+			Size:      e.Size,
+			Offline:   offline,
+			Inherited: offline && !pinned[full],
 		})
 	}
 	writeJSON(w, map[string]any{"path": rel, "entries": items})
@@ -461,6 +480,138 @@ func (s *Server) handleOffline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleDolphin reports the state of the file-manager integration plus the output
+// of a running install or removal, so the settings page can show progress and,
+// above all, why a build failed.
+func (s *Server) handleDolphin(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	resp := map[string]any{
+		"kde":   isKDE(),
+		"job":   s.dolphinJob,
+		"lines": append([]string{}, s.dolphinLines...),
+		"error": s.dolphinErr,
+	}
+	s.mu.Unlock()
+
+	rep, err := dolphin.Status()
+	if err != nil {
+		resp["installed"] = false
+		resp["error"] = err.Error()
+		writeJSON(w, resp)
+		return
+	}
+	resp["installed"] = rep.OverlayPresent && rep.ActionPresent
+	resp["on_plugin_path"] = rep.OnPluginPath
+	resp["plugin_dir"] = rep.Paths.PluginDir
+	// Missing build tools are worth saying before the user starts a build that
+	// cannot succeed; the message carries the distribution's install command.
+	if err := dolphin.Requirements(); err != nil {
+		resp["requirements"] = err.Error()
+	}
+	if pv, err := dolphin.PreviewsStatus(s.cfg.LocalDir); err == nil {
+		resp["previews_disabled"] = pv.Disabled
+	}
+	if def, err := dolphin.PreviewsDefaultOff(); err == nil {
+		resp["previews_default_off"] = def
+	}
+	writeJSON(w, resp)
+}
+
+// handleDolphinPreviewsDefault makes "no previews" Dolphin's default for folders
+// without their own view properties. Opt-in and separate from the switch above,
+// because it reaches beyond the sync folder.
+func (s *Server) handleDolphinPreviewsDefault(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Disabled bool `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+		return
+	}
+	if err := dolphin.SetPreviewsDefault(body.Disabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.log("dolphin default previews: %v", map[bool]string{true: "off", false: "on"}[body.Disabled])
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleDolphinPreviews switches Dolphin's file previews for the sync folder off
+// or on. Previews read every file they render, which downloads it through the
+// mount – so leaving them on means the Drive fills up from browsing alone.
+func (s *Server) handleDolphinPreviews(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Disabled bool `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetPreviews(body.Disabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.log("dolphin previews for %s: %v", s.cfg.LocalDir, map[bool]string{true: "off", false: "on"}[body.Disabled])
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDolphinInstall(w http.ResponseWriter, r *http.Request) {
+	s.runDolphinJob("install", dolphin.Install)
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDolphinRemove(w http.ResponseWriter, r *http.Request) {
+	s.runDolphinJob("remove", dolphin.Remove)
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// runDolphinJob runs job in the background – unless one is already running –
+// collecting its output for /api/dolphin to hand to the page.
+func (s *Server) runDolphinJob(name string, job func(func(string, ...any)) error) {
+	s.mu.Lock()
+	if s.dolphinJob != "" {
+		s.mu.Unlock()
+		return
+	}
+	s.dolphinJob = name
+	s.dolphinLines = nil
+	s.dolphinErr = ""
+	s.mu.Unlock()
+
+	go func() {
+		err := job(func(format string, args ...any) {
+			line := fmt.Sprintf(format, args...)
+			s.mu.Lock()
+			s.dolphinLines = append(s.dolphinLines, line)
+			if len(s.dolphinLines) > 200 {
+				s.dolphinLines = s.dolphinLines[len(s.dolphinLines)-200:]
+			}
+			s.mu.Unlock()
+			s.log("[dolphin] %s", line)
+		})
+		s.mu.Lock()
+		s.dolphinJob = ""
+		if err != nil {
+			s.dolphinErr = err.Error()
+			s.log("dolphin %s failed: %v", name, err)
+		}
+		s.mu.Unlock()
+	}()
+}
+
+// isKDE reports whether this is a KDE session. The integration is a KIO plugin,
+// so on any other desktop the page hides the card instead of offering something
+// that cannot work there.
+func isKDE() bool {
+	for _, env := range []string{"XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"} {
+		v := strings.ToLower(os.Getenv(env))
+		if strings.Contains(v, "kde") || strings.Contains(v, "plasma") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {

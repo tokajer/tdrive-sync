@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/i18n"
 )
 
@@ -36,6 +37,7 @@ func (m *Manager) runStream(ctx context.Context) {
 				firstReady = true
 			}
 			go m.warmOffline(ctx)
+			go m.previewFolders(ctx)
 		}
 
 		select {
@@ -205,6 +207,48 @@ func (m *Manager) warmPath(ctx context.Context, rel string) {
 		_ = f.Close()
 		return nil
 	})
+}
+
+// -------- Dolphin previews (stream mode) --------
+
+// previewFolders keeps the "no previews here" markers in step with the folders
+// that exist in the Drive, for as long as the setting is switched on.
+//
+// It has to be repeated because Dolphin stores view properties per folder without
+// inheriting them: a folder created later would come with previews on again, and
+// a preview downloads every file it renders.
+func (m *Manager) previewFolders(ctx context.Context) {
+	const every = 30 * time.Minute
+	for {
+		m.applyPreviewFolders(ctx)
+		if sleepCtx(ctx, every) {
+			return
+		}
+	}
+}
+
+// applyPreviewFolders writes the markers for every folder in the Drive, once.
+func (m *Manager) applyPreviewFolders(ctx context.Context) {
+	rep, err := dolphin.PreviewsStatus(m.cfg.LocalDir)
+	if err != nil || !rep.Disabled {
+		return // the user did not ask for this
+	}
+	lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	dirs, err := m.rc.ListDirs(lctx, "")
+	if err != nil {
+		if ctx.Err() == nil {
+			m.logf("could not list the folders for the preview setting: %v", err)
+		}
+		return
+	}
+	n, err := dolphin.ApplyPreviewFolders(m.cfg.LocalDir, dirs)
+	if err != nil {
+		m.logf("preview setting: %v", err)
+	}
+	if n > 0 {
+		m.logf("previews switched off for %d new folder(s), %d in the Drive", n, len(dirs))
+	}
 }
 
 // freePath drops the local copy of a Drive-relative path and reports how much

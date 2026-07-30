@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/notify"
@@ -362,6 +363,24 @@ func (m *Manager) SetOffline(path string, on bool) error {
 			m.notifier.Notify(appName, i18n.T("notify.space_freed", humanBytes(freed)))
 		}
 		m.broadcast()
+	}()
+	return nil
+}
+
+// SetPreviews switches the file manager's previews for the sync folder off or on
+// (see internal/dolphin) and, when switching off, applies the setting to every
+// folder inside the Drive in the background – Dolphin needs one marker per folder.
+func (m *Manager) SetPreviews(off bool) error {
+	if err := dolphin.SetPreviews(m.cfg.LocalDir, off); err != nil {
+		return err
+	}
+	if !off {
+		return nil
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		m.applyPreviewFolders(ctx)
 	}()
 	return nil
 }

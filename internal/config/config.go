@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -214,25 +215,77 @@ func (c *Config) Configured() bool {
 	return c.AccountEmail != ""
 }
 
-// AddOffline registers a Drive-relative path as offline-available (dedup).
+// AddOffline registers a Drive-relative path as offline-available.
+//
+// Pins are hierarchical: pinning a folder pins everything below it, so a path
+// already covered by a pinned ancestor is not added again, and pins below the new
+// one are dropped. Leaving them would make a later release of the folder
+// ineffective – the leftover pin pulls its file straight back into the cache.
 func (c *Config) AddOffline(p string) {
-	for _, e := range c.OfflinePaths {
-		if e == p {
-			return
-		}
+	p = cleanOfflinePath(p)
+	if p == "" {
+		return
 	}
-	c.OfflinePaths = append(c.OfflinePaths, p)
-}
-
-// RemoveOffline removes a previously pinned path.
-func (c *Config) RemoveOffline(p string) {
+	if c.IsOffline(p) {
+		return
+	}
 	out := c.OfflinePaths[:0]
 	for _, e := range c.OfflinePaths {
-		if e != p {
+		if !covers(p, e) {
+			out = append(out, e)
+		}
+	}
+	c.OfflinePaths = append(out, p)
+}
+
+// RemoveOffline releases a pinned path together with every pin below it, so
+// releasing a folder really releases its contents ("free up space").
+func (c *Config) RemoveOffline(p string) {
+	p = cleanOfflinePath(p)
+	if p == "" {
+		return
+	}
+	out := c.OfflinePaths[:0]
+	for _, e := range c.OfflinePaths {
+		if cleanOfflinePath(e) != p && !covers(p, e) {
 			out = append(out, e)
 		}
 	}
 	c.OfflinePaths = out
+}
+
+// IsOffline reports whether a Drive-relative path is kept offline, either by its
+// own pin or through a pinned parent folder.
+func (c *Config) IsOffline(p string) bool {
+	p = cleanOfflinePath(p)
+	if p == "" {
+		return false
+	}
+	for _, e := range c.OfflinePaths {
+		if e = cleanOfflinePath(e); e == p || covers(e, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// covers reports whether the pinned path parent contains child.
+func covers(parent, child string) bool {
+	parent, child = cleanOfflinePath(parent), cleanOfflinePath(child)
+	if parent == "" || child == "" {
+		return false
+	}
+	return strings.HasPrefix(child, parent+"/")
+}
+
+// cleanOfflinePath normalises a Drive-relative path so pins compare reliably:
+// "Docs", "Docs/" and "/Docs" all name the same folder.
+func cleanOfflinePath(p string) string {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	if p == "." {
+		return ""
+	}
+	return p
 }
 
 // RcloneConfPath is where the rclone remote definition lives.

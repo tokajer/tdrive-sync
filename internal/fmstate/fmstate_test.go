@@ -2,6 +2,7 @@ package fmstate
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -209,6 +210,40 @@ func TestResolveRelStates(t *testing.T) {
 		i.Pinned = []string{"dir"}
 		if got := i.ResolveRel("dir", true); got != Pinned {
 			t.Errorf("pinned folder: got %q, want %q", got, Pinned)
+		}
+	})
+
+	// A cache folder stays behind after its content is freed, and rclone leaves a
+	// placeholder for every file it merely opened. Neither means the folder holds
+	// anything locally, and the indicator must not claim it does.
+	t.Run("folders without cached data are cloud-only", func(t *testing.T) {
+		i := cache(t)
+
+		if err := os.MkdirAll(i.DataPath("emptied/deep"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := i.ResolveRel("emptied", true); got != Cloud {
+			t.Errorf("emptied folder: got %q, want %q", got, Cloud)
+		}
+
+		writeCached(t, i, "placeholders/a.bin", size, 0, false, nil)
+		if got := i.ResolveRel("placeholders", true); got != Cloud {
+			t.Errorf("folder of placeholders: got %q, want %q", got, Cloud)
+		}
+
+		writeCached(t, i, "placeholders/sub/b.bin", size, 4096, false, nil)
+		if got := i.ResolveRel("placeholders", true); got != Partial {
+			t.Errorf("data in a subfolder: got %q, want %q", got, Partial)
+		}
+	})
+
+	t.Run("a huge folder answers without walking all of it", func(t *testing.T) {
+		i := cache(t)
+		for n := 0; n < dirScanBudget*2; n++ {
+			writeCached(t, i, filepath.Join("many", fmt.Sprint(n)), size, 0, false, nil)
+		}
+		if got := i.ResolveRel("many", true); got != Partial {
+			t.Errorf("got %q, want %q (the budget makes it assume data)", got, Partial)
 		}
 	})
 

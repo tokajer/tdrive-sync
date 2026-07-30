@@ -51,8 +51,9 @@ for everything else (including an unset locale).
   reports new versions and updates the AppImage at the press of a button.
   Optionally **prereleases** are considered as well. The current version is
   shown in the settings window.
-- **Tray icon** with a status colour (green = up to date, blue = syncing,
-  red = error) and a context menu.
+- **Tray icon** – the app logo itself, which shows the state by how it looks:
+  full colour when up to date, turning while syncing or starting, blinking red on
+  an error, grey while paused or signed out. Plus a context menu.
 - **Native settings window** with a file browser for picking the offline folders
   (uses the system's WebKitGTK, no web browser).
 - **Links open in your own browser:** the sign-in link and the setup guide's
@@ -151,7 +152,11 @@ the green check mark and the context menu stays out of the way.
 Dolphin's overlay icons come from a KIO plugin, and such a plugin has to be
 compiled against the KDE Frameworks build it is loaded into – a prebuilt binary
 inside the AppImage would break on the next Plasma update. It is therefore
-compiled once, on your machine, into your home directory:
+compiled once, on your machine, into your home directory.
+
+On KDE the settings window has a **“File manager (Dolphin)”** card for this:
+“Install integration” compiles the plugin and shows what it is doing, including
+what is still missing if the build cannot run. The same thing from a terminal:
 
 ```bash
 tdrive-sync dolphin install   # compile and install
@@ -177,6 +182,56 @@ straight away without touching the session:
 ```bash
 QT_PLUGIN_PATH=~/.local/lib64/qt6/plugins dolphin ~/GoogleDrive
 ```
+
+### Previews in the sync folder (experimental)
+
+This part is **experimental**: it works, but not dependably. Dolphin reads the
+setting only when it opens a folder, so it has to be restarted completely (a new
+window reuses the running process and its old configuration), the first look into a
+folder still runs one round of previews unless the second switch below is on, and a
+folder created after the last refresh previews once before its marker exists.
+
+A preview is made by reading the file, and reading through the mount downloads it
+– so browsing with previews on slowly pulls the whole Drive onto the disk, and
+“free up space” is undone within seconds while the folder is on screen. The
+settings card therefore has a switch, **“Switch previews off in the sync
+folder”**, or from a terminal:
+
+```bash
+tdrive-sync dolphin previews off   # and `on` to allow them again
+```
+
+It affects the sync folder only – everywhere else Dolphin keeps its previews.
+Three things happen for it:
+
+- `GlobalViewProps=false` in `dolphinrc`, because Dolphin ignores per-folder
+  settings while it uses common properties for all folders. The previous value is
+  remembered and restored when the switch goes off again.
+- `PreviewsShown=false` in Dolphin's own view-properties store
+  (`~/.local/share/dolphin/view_properties/local/…`) – never a file inside the
+  Drive, so nothing is uploaded.
+- the same marker for **every folder in the Drive**, refreshed by the service
+  every 30 minutes. Dolphin keeps view properties per folder and does not inherit
+  them, so without this a subfolder would preview – and download – its content
+  again.
+
+Dolphin reads the setting when it opens a folder, so restart it once (`kquitapp6
+dolphin`) after switching.
+
+A folder's own setting is applied only once its view is up, so the **first** look
+into a folder still runs one round of previews. The second switch,
+**“Also make ‘no previews’ Dolphin's default”**, stops that too – it writes
+`PreviewsShown=false` into Dolphin's global view properties, which covers every
+folder that has no setting of its own, outside the sync folder as well. It is
+therefore off by default and separate:
+
+```bash
+tdrive-sync dolphin previews-default off   # `on` restores the previous default
+```
+
+Individual folders can still switch previews back on; taking the default back
+restores exactly what Dolphin had before (including removing the file again if it
+did not exist).
 
 ### How the state is worked out
 
@@ -330,7 +385,8 @@ they are diagnostic.
 - Google Docs/Sheets/Slides show up as link files (as usual with rclone).
 - **Browsing downloads files:** with previews switched on, the file manager reads
   files to make thumbnails, so items turn “available offline” simply from being
-  looked at. That is how an rclone mount works, not something the indicator does.
+  looked at. That is how an rclone mount works, not something the indicator does –
+  switch previews off for the sync folder (see above) to stop it.
 - **Freeing space** removes rclone's cached copy directly, because rclone has no
   remote-control command for it (`vfs/forget` only drops directory listings).
   rclone notices the missing data and downloads it again on the next access.

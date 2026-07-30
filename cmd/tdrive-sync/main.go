@@ -88,6 +88,12 @@ File manager integration (KDE/Dolphin):
   tdrive-sync dolphin install    build and install the overlay-icon plugin
   tdrive-sync dolphin status     show whether the plugin is in place
   tdrive-sync dolphin remove     uninstall it again
+  tdrive-sync dolphin previews on|off
+                                 previews in the sync folder (experimental; off keeps
+                                 them from downloading every file looked at)
+  tdrive-sync dolphin previews-default on|off
+                                 same as a Dolphin-wide default, for folders that
+                                 have no setting of their own
 
   tdrive-sync offline on|off <path>…   keep paths offline, or release them
   tdrive-sync file-state <path>…       print the sync state of paths
@@ -191,14 +197,54 @@ func cliDolphin() {
 		out("context menu plugin: %s", present(r.ActionPresent, r.Paths.Action))
 		out("environment entry:   %s", present(r.EnvFilePresent, r.Paths.EnvFile))
 		out("on QT_PLUGIN_PATH:   %t", r.OnPluginPath)
+		cfg := loadOrExit()
+		if pv, err := dolphin.PreviewsStatus(cfg.LocalDir); err == nil {
+			out("previews in %s: %s", cfg.LocalDir, map[bool]string{true: "off", false: "on"}[pv.Disabled])
+		}
 		if r.OverlayPresent && !r.OnPluginPath {
 			out("")
 			out("The plugin is installed but not on this process's QT_PLUGIN_PATH.")
 			out("Log out and back in once, or start Dolphin with:")
 			out("  QT_PLUGIN_PATH=%q dolphin", r.Paths.PluginDir)
 		}
+	case "previews-default":
+		if len(os.Args) < 4 || (os.Args[3] != "on" && os.Args[3] != "off") {
+			log.Fatal("usage: tdrive-sync dolphin previews-default on|off")
+		}
+		off := os.Args[3] == "off"
+		if err := dolphin.SetPreviewsDefault(off); err != nil {
+			log.Fatalf("could not change the default: %v", err)
+		}
+		if off {
+			out("Dolphin's default is now “no previews” (folders with their own setting keep it).")
+		} else {
+			out("Dolphin's preview default is back to normal.")
+		}
+	case "previews":
+		if len(os.Args) < 4 || (os.Args[3] != "on" && os.Args[3] != "off") {
+			log.Fatal("usage: tdrive-sync dolphin previews on|off")
+		}
+		cfg := loadOrExit()
+		off := os.Args[3] == "off"
+		// Through the daemon when it runs: it also writes the marker for every
+		// folder in the Drive, which needs the remote listing.
+		if instanceRunning(cfg.WebPort) {
+			if err := postJSON(cfg.WebPort, "/api/dolphin/previews", map[string]any{"disabled": off}); err != nil {
+				log.Fatalf("could not change the preview setting: %v", err)
+			}
+		} else if err := dolphin.SetPreviews(cfg.LocalDir, off); err != nil {
+			log.Fatalf("could not change the preview setting: %v", err)
+		} else if off {
+			out("note: the daemon is not running – the folders inside the Drive get their")
+			out("marker the next time it starts.")
+		}
+		if off {
+			out("previews off for %s – restart Dolphin so it reads the setting.", cfg.LocalDir)
+		} else {
+			out("previews on for %s – looking at files downloads them again.", cfg.LocalDir)
+		}
 	default:
-		log.Fatal("usage: tdrive-sync dolphin install|status|remove")
+		log.Fatal("usage: tdrive-sync dolphin install|status|remove|previews on|off|previews-default on|off")
 	}
 }
 

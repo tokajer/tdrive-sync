@@ -244,6 +244,30 @@ type Entry struct {
 	Size  int64  `json:"Size"`
 }
 
+// ListDirs returns every folder below a Drive-relative path, recursively and
+// Drive-relative. One rclone call, listings only – no file content is touched.
+func (c *Client) ListDirs(ctx context.Context, rel string) ([]string, error) {
+	args := append(c.base(), "lsjson", "--dirs-only", "--recursive",
+		"--no-modtime", "--no-mimetype", c.Remote()+rel)
+	out, err := exec.CommandContext(ctx, c.bin, args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return nil, err
+	}
+	dirs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		p := e.Path
+		if rel != "" {
+			p = rel + "/" + p
+		}
+		dirs = append(dirs, p)
+	}
+	return dirs, nil
+}
+
 // List returns the immediate children of a Drive-relative directory ("" = root).
 func (c *Client) List(ctx context.Context, rel string) ([]Entry, error) {
 	remote := c.Remote() + rel

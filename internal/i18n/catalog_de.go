@@ -197,4 +197,31 @@ var catalogDE = map[string]string{
 	"ui.drive_root":             "🏠 Drive",
 	"ui.empty_folder":           "Leerer Ordner",
 	"ui.offline":                "offline",
+	"ui.offline_parent":         "offline (übergeordneter Ordner)",
+
+	// -------- settings UI: file-manager integration (KDE/Dolphin) --------
+	"ui.dolphin":                "Dateimanager (Dolphin)",
+	"ui.dolphin_hint":           "Markiert jedes Element im Sync-Ordner mit seinem Zustand und ergänzt „Offline behalten“ und „Speicherplatz freigeben“ im Kontextmenü. Das Plugin wird auf diesem Rechner kompiliert, weil es zur installierten KDE-Version passen muss.",
+	"ui.dolphin_not_installed":  "Nicht installiert – Dolphin zeigt noch keine Sync-Symbole.",
+	"ui.dolphin_deps_missing":   "⚠ Nicht installiert – die Build-Voraussetzungen fehlen (siehe unten).",
+	"ui.dolphin_installed":      "✓ Installiert und aktiv.",
+	"ui.dolphin_restart_needed": "✓ Installiert – Dolphin neu starten (alle Fenster schließen), damit das Plugin geladen wird. Fehlen die Symbole weiterhin, einmal ab- und wieder anmelden.",
+	"ui.dolphin_install":        "Integration installieren",
+	"ui.dolphin_reinstall":      "Neu kompilieren",
+	"ui.dolphin_remove":         "Entfernen",
+	"ui.dolphin_installing":     "Plugin wird kompiliert und installiert…",
+	"ui.dolphin_removing":       "Wird entfernt…",
+	"ui.dolphin_failed":         "Fehlgeschlagen:",
+	"ui.confirm_dolphin_remove": "Dolphin-Integration entfernen? Die Sync-Symbole im Dateimanager verschwinden dann.",
+
+	// -------- settings UI: Dolphin previews in the sync folder --------
+	"ui.dolphin_previews":          "Vorschaubilder im Sync-Ordner abschalten (experimentell)",
+	"ui.dolphin_previews_hint":     "Eine Vorschau liest die ganze Datei, und Lesen heißt Herunterladen – schon Blättern würde die Festplatte füllen. Gilt nur für den Sync-Ordner; überall sonst behält Dolphin seine Vorschauen (dafür wird es auf ordnerweise Ansichts-Eigenschaften umgestellt). Experimentell: Dolphin liest die Einstellung erst beim Öffnen eines Ordners, ein Neustart von Dolphin ist nötig, und der erste Blick in einen Ordner lädt trotzdem einmal.",
+	"ui.dolphin_previews_off_done": "Vorschaubilder im Sync-Ordner sind aus. Ein offenes Dolphin-Fenster einmal neu laden (F5) oder den Ordner neu öffnen.",
+	"ui.dolphin_previews_on_done":  "Vorschaubilder im Sync-Ordner sind wieder an. Achtung: Ansehen lädt die Dateien herunter.",
+
+	"ui.dolphin_previews_default":        "Vorschau auch als Dolphin-Vorgabe abschalten (experimentell)",
+	"ui.dolphin_previews_default_hint":   "Nötig, damit auch der erste Blick in einen Ordner nichts lädt: Dolphin wendet die Einstellung eines Ordners erst an, wenn die Ansicht schon steht. Diese Vorgabe gilt für alle Ordner ohne eigene Einstellung – also auch außerhalb des Sync-Ordners. Einzelne Ordner können die Vorschau weiterhin selbst einschalten.",
+	"ui.dolphin_previews_default_done":   "Vorgabe gesetzt: keine Vorschau in Ordnern ohne eigene Einstellung. Dolphin einmal neu starten.",
+	"ui.dolphin_previews_default_undone": "Vorgabe zurückgenommen – Dolphin zeigt wieder überall Vorschauen.",
 }

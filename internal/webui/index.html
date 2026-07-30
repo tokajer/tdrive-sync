@@ -273,6 +273,26 @@
     <div id="crumbs" class="crumbs"></div>
     <div id="list" class="list"></div>
   </div>
+
+  <!-- FILE MANAGER INTEGRATION (KDE only) -->
+  <div class="card hidden" id="dolphinCard">
+    <h2 data-i18n="ui.dolphin"></h2>
+    <p class="muted" style="margin-top:0" data-i18n="ui.dolphin_hint"></p>
+    <div id="dolphinState" class="credstate warn" data-i18n="ui.loading"></div>
+    <div class="row">
+      <button id="dolphinInstall" class="primary" data-i18n="ui.dolphin_install"></button>
+      <button id="dolphinRemove" class="hidden" data-i18n="ui.dolphin_remove"></button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <label class="off"><input type="checkbox" id="dolphinPreviews"> <span data-i18n="ui.dolphin_previews"></span></label>
+    </div>
+    <p class="muted" style="margin:6px 0 0" data-i18n="ui.dolphin_previews_hint"></p>
+    <div class="row" style="margin-top:10px">
+      <label class="off"><input type="checkbox" id="dolphinPreviewsDefault"> <span data-i18n="ui.dolphin_previews_default"></span></label>
+    </div>
+    <p class="muted" style="margin:6px 0 0" data-i18n="ui.dolphin_previews_default_hint"></p>
+    <div id="dolphinLog" class="loginbox hidden" style="white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,monospace;font-size:12px;max-height:240px;overflow:auto"></div>
+  </div>
 </div>
 
 <script>
@@ -520,8 +540,11 @@ async function browse(path){
     if(e.is_dir){
       const off=document.createElement('label'); off.className='off';
       const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=e.offline;
+      // A folder inside a pinned folder is offline through its parent; it cannot
+      // be released on its own, so the box shows the state without being usable.
+      cb.disabled = e.inherited;
       cb.onchange=async ()=>{ await post('/api/offline',{path:e.path, on:cb.checked}); };
-      off.appendChild(cb); off.appendChild(document.createTextNode(t('ui.offline')));
+      off.appendChild(cb); off.appendChild(document.createTextNode(e.inherited ? t('ui.offline_parent') : t('ui.offline')));
       item.appendChild(off);
     } else if(e.offline){
       const p=document.createElement('span'); p.className='pill'; p.textContent=t('ui.offline'); item.appendChild(p);
@@ -530,6 +553,74 @@ async function browse(path){
   });
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// --- file manager integration (KDE/Dolphin) ---
+// The plugin is compiled on this machine, which takes a few seconds and can fail
+// on a missing devel package – so the card shows the build output, not a spinner.
+let dolphinTimer = null;
+async function loadDolphin(){
+  let d;
+  try { d = await api('/api/dolphin'); } catch(e){ return; }
+  $('#dolphinCard').classList.toggle('hidden', !d.kde);
+  if(!d.kde) return;
+  const running = !!d.job;
+  const st = $('#dolphinState');
+  if(running){
+    st.className = 'credstate';
+    st.textContent = d.job==='remove' ? t('ui.dolphin_removing') : t('ui.dolphin_installing');
+  } else if(d.installed){
+    st.className = 'credstate ok';
+    st.textContent = d.on_plugin_path ? t('ui.dolphin_installed') : t('ui.dolphin_restart_needed');
+  } else {
+    st.className = 'credstate warn';
+    st.textContent = d.requirements ? t('ui.dolphin_deps_missing') : t('ui.dolphin_not_installed');
+  }
+  $('#dolphinInstall').textContent = d.installed ? t('ui.dolphin_reinstall') : t('ui.dolphin_install');
+  $('#dolphinInstall').disabled = running;
+  $('#dolphinRemove').classList.toggle('hidden', !d.installed);
+  $('#dolphinRemove').disabled = running;
+  $('#dolphinPreviews').checked = !!d.previews_disabled;
+  $('#dolphinPreviewsDefault').checked = !!d.previews_default_off;
+
+  // Requirements first (they say what to install), then the build output, then
+  // the failure – the hint the user has to act on must never be swallowed.
+  let text = '';
+  if(d.requirements && !d.installed) text = d.requirements;
+  if((d.lines||[]).length) text = (text? text+'\n\n':'') + d.lines.join('\n');
+  if(d.error) text = (text? text+'\n\n':'') + t('ui.dolphin_failed') + ' ' + d.error;
+  const box = $('#dolphinLog');
+  box.textContent = text;
+  box.classList.toggle('hidden', !text);
+
+  clearTimeout(dolphinTimer);
+  if(running) dolphinTimer = setTimeout(loadDolphin, 1000);
+}
+$('#dolphinInstall').onclick = async ()=>{
+  $('#dolphinState').textContent = t('ui.dolphin_installing');
+  try { await post('/api/dolphin/install'); } catch(e){}
+  loadDolphin();
+};
+$('#dolphinRemove').onclick = async ()=>{
+  if(!confirm(t('ui.confirm_dolphin_remove'))) return;
+  try { await post('/api/dolphin/remove'); } catch(e){}
+  loadDolphin();
+};
+$('#dolphinPreviewsDefault').onchange = async ()=>{
+  const disabled = $('#dolphinPreviewsDefault').checked;
+  try {
+    await post('/api/dolphin/previews-default', {disabled});
+    alert(t(disabled ? 'ui.dolphin_previews_default_done' : 'ui.dolphin_previews_default_undone'));
+  } catch(e){ alert(t('ui.error', e.message)); }
+  loadDolphin();
+};
+$('#dolphinPreviews').onchange = async ()=>{
+  const disabled = $('#dolphinPreviews').checked;
+  try {
+    await post('/api/dolphin/previews', {disabled});
+    alert(t(disabled ? 'ui.dolphin_previews_off_done' : 'ui.dolphin_previews_on_done'));
+  } catch(e){ alert(t('ui.error', e.message)); }
+  loadDolphin();
+};
 
 // --- log panel ---
 let logOpen = false;
@@ -595,8 +686,11 @@ $('#updPre').onchange = async ()=>{ await post('/api/update/prerelease',{on:$('#
 applyI18n();
 refreshStatus();
 loadUpdate();
+loadDolphin();
 setInterval(loadUpdate, 5000);
 setInterval(refreshStatus, 2500);
+// Rarely: this only changes when the user installs packages or restarts Dolphin.
+setInterval(loadDolphin, 30000);
 setInterval(()=>{ if(logOpen) loadLog(); }, 4000);
 setTimeout(async ()=>{ const d = await api('/api/status'); if(d.configured && d.status.mode==='stream') browse(''); }, 400);
 </script>

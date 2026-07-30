@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
 
 #include <algorithm>
 
@@ -174,6 +175,54 @@ static qint64 firstHole(const QByteArray &nativePath, qint64 whole)
     return static_cast<qint64>(off);
 }
 
+/**
+ * Whether a cache directory holds any downloaded data.
+ *
+ * The directory tree outlives the data in it: rclone creates the folders when it
+ * first touches a file below them, freeing a single file leaves its parents
+ * behind, and a file that was only opened stays a fully sparse placeholder.
+ * Taking "the cache folder exists" for "something is local" would leave folders
+ * marked as partially offline long after the last byte was freed.
+ *
+ * Bounded on purpose: this runs from getOverlays() for every visible item, so
+ * after kScanBudget entries it gives up and assumes there is data. A folder that
+ * really holds some hits the first entry anyway.
+ */
+static bool dirHasData(const QString &dir)
+{
+    static const int kScanBudget = 64;
+    int budget = kScanBudget;
+    QStringList queue{dir};
+    while (!queue.isEmpty()) {
+        const QString cur = queue.takeFirst();
+        const QDir d(cur);
+        if (!d.exists()) {
+            continue;
+        }
+        const QFileInfoList entries =
+            d.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+        for (const QFileInfo &e : entries) {
+            if (budget <= 0) {
+                return true; // out of budget: keep the answer we gave before
+            }
+            --budget;
+            if (e.isDir()) {
+                queue.append(e.absoluteFilePath());
+                continue;
+            }
+            struct stat st;
+            if (::stat(QFile::encodeName(e.absoluteFilePath()).constData(), &st) != 0) {
+                continue;
+            }
+            if (st.st_size > 0 && st.st_blocks == 0) {
+                continue; // a placeholder rclone has not downloaded into yet
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 /** What the local cache says about one file. */
 struct CacheInfo {
     bool found = false; /**< there is a cache file at all */
@@ -252,7 +301,10 @@ State resolve(const Info &info, const QString &localFile)
     // below it is cached: deciding "all of it is local" would mean walking the
     // whole subtree on every single lookup.
     if (QFileInfo(dataFile).isDir()) {
-        return pinned ? State::Pinned : State::Partial;
+        if (pinned) {
+            return State::Pinned;
+        }
+        return dirHasData(dataFile) ? State::Partial : State::Cloud;
     }
 
     const CacheInfo c = inspect(dataFile, metaFile);

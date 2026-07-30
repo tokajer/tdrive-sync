@@ -187,6 +187,13 @@ func Status() (Report, error) {
 	return r, nil
 }
 
+// Requirements reports what is missing before the plugin can be built, so the
+// settings window can say so before the user starts a build that would fail. The
+// error text contains the distribution's install command. It cannot promise the
+// build will work – whether the KDE development files are complete only shows
+// when cmake configures.
+func Requirements() error { return missingTools() }
+
 // writeSources unpacks the embedded plugin sources, replacing what is there.
 func writeSources(dir string) error {
 	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
