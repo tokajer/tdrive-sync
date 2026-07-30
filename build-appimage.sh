@@ -51,12 +51,7 @@ if [ ! -x "$RCLONE_BIN" ]; then
     aarch64) RC_ARCH=arm64 ;;
   esac
   curl -fsSL -o "$BUILD/rclone.zip" "https://downloads.rclone.org/rclone-current-linux-${RC_ARCH}.zip"
-  # Keep rclone's own licence text: the MIT licence requires it to travel with
-  # every copy of the binary we ship inside the AppImage.
-  ( cd "$BUILD" && unzip -oq rclone.zip \
-      && cp rclone-*-linux-${RC_ARCH}/rclone rclone \
-      && cp rclone-*-linux-${RC_ARCH}/LICENSE.txt rclone.LICENSE \
-      && rm -rf rclone-*-linux-${RC_ARCH} rclone.zip )
+  ( cd "$BUILD" && unzip -oq rclone.zip && cp rclone-*-linux-${RC_ARCH}/rclone rclone && rm -rf rclone-*-linux-${RC_ARCH} rclone.zip )
   chmod +x "$RCLONE_BIN"
 fi
 
@@ -84,13 +79,11 @@ cp "$ROOT/packaging/AppRun"          "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/tdrive-sync" "$APPDIR/usr/lib/tdrive-sync/rclone"
 
 # The GPL requires the licence text to accompany the binary; rclone's MIT
-# licence requires the same for the copy of rclone we bundle.
-cp "$ROOT/LICENSE" "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE"
-if [ -f "$BUILD/rclone.LICENSE" ]; then
-  cp "$BUILD/rclone.LICENSE" "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE.rclone"
-else
-  echo "!! no rclone licence text in $BUILD/rclone.LICENSE – shipping without it" >&2
-fi
+# licence requires the same for the copy of rclone we bundle. rclone's own
+# release archive ships no licence file, so we keep a copy of it in packaging/ —
+# that also covers builds that bring their own binary via $RCLONE_BIN.
+cp "$ROOT/LICENSE"                       "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE"
+cp "$ROOT/packaging/LICENSE.rclone"      "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE.rclone"
 
 # The app logo is the single source of truth in internal/window/ (embedded into
 # the binary for the settings window); reuse the very same file as the AppImage
