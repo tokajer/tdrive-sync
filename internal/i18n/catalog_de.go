@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package i18n
 
 // catalogDE is the German catalog. It mirrors the keys of catalogEN; anything

@@ -2,7 +2,8 @@
     Context-menu actions for the TDrive Sync folder in Dolphin: pin files and
     folders for offline use, or release them back to online-only.
 
-    SPDX-License-Identifier: MIT
+    SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+    SPDX-License-Identifier: GPL-3.0-or-later
 */
 
 #include "tdrivestate.h"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package webui serves the local settings interface on 127.0.0.1. It exposes a
 // small JSON API driven by the manager plus an embedded single-page frontend.
 package webui

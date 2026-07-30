@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package notify sends desktop notifications over the freedesktop DBus service,
 // degrading to a no-op when no session bus / notification daemon is available.
 package notify

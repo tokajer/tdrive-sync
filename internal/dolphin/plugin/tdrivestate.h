@@ -1,7 +1,8 @@
 /*
     Shared state resolution for the TDrive Sync Dolphin integration.
 
-    SPDX-License-Identifier: MIT
+    SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+    SPDX-License-Identifier: GPL-3.0-or-later
 */
 
 #pragma once

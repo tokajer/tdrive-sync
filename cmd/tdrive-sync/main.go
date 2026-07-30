@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Command tdrive-sync is a Google Drive sync client with a tray icon and a local
 // settings UI, modelled on the Windows Google Drive client. It uses a bundled
 // rclone binary as its sync engine.

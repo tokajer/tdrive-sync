@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package config loads and persists the application configuration.
 package config
 

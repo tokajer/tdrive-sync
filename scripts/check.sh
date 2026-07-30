@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #
 # Health check for TDrive Sync: verifies the tree builds and passes its tests,
 # then reports what is actually installed and running on this machine.

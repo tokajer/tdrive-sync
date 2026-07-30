@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package logbuf is a small in-memory, thread-safe ring buffer for recent log
 // lines. Every line is also mirrored to the standard logger (stderr/journal).
 // The web UI reads from it to show an error/event log.

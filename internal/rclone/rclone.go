@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package rclone wraps the bundled rclone binary: locating it, authenticating
 // a Google Drive remote, and building arguments for mount / bisync runs.
 package rclone

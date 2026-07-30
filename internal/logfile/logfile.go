@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package logfile provides a simple day-rotating file writer with age-based
 // retention, used to persist the daemon's log to disk while keeping it tidy.
 package logfile

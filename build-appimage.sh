@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Builds the tdrive-sync AppImage.
 #
 #   ./build-appimage.sh
@@ -48,7 +51,12 @@ if [ ! -x "$RCLONE_BIN" ]; then
     aarch64) RC_ARCH=arm64 ;;
   esac
   curl -fsSL -o "$BUILD/rclone.zip" "https://downloads.rclone.org/rclone-current-linux-${RC_ARCH}.zip"
-  ( cd "$BUILD" && unzip -oq rclone.zip && cp rclone-*-linux-${RC_ARCH}/rclone rclone && rm -rf rclone-*-linux-${RC_ARCH} rclone.zip )
+  # Keep rclone's own licence text: the MIT licence requires it to travel with
+  # every copy of the binary we ship inside the AppImage.
+  ( cd "$BUILD" && unzip -oq rclone.zip \
+      && cp rclone-*-linux-${RC_ARCH}/rclone rclone \
+      && cp rclone-*-linux-${RC_ARCH}/LICENSE.txt rclone.LICENSE \
+      && rm -rf rclone-*-linux-${RC_ARCH} rclone.zip )
   chmod +x "$RCLONE_BIN"
 fi
 
@@ -67,12 +75,22 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/lib/tdrive-sync" \
          "$APPDIR/usr/share/applications" \
-         "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+         "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+         "$APPDIR/usr/share/licenses/tdrive-sync"
 
 cp "$BUILD/tdrive-sync"              "$APPDIR/usr/bin/tdrive-sync"
 cp "$RCLONE_BIN"                     "$APPDIR/usr/lib/tdrive-sync/rclone"
 cp "$ROOT/packaging/AppRun"          "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/tdrive-sync" "$APPDIR/usr/lib/tdrive-sync/rclone"
+
+# The GPL requires the licence text to accompany the binary; rclone's MIT
+# licence requires the same for the copy of rclone we bundle.
+cp "$ROOT/LICENSE" "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE"
+if [ -f "$BUILD/rclone.LICENSE" ]; then
+  cp "$BUILD/rclone.LICENSE" "$APPDIR/usr/share/licenses/tdrive-sync/LICENSE.rclone"
+else
+  echo "!! no rclone licence text in $BUILD/rclone.LICENSE – shipping without it" >&2
+fi
 
 # The app logo is the single source of truth in internal/window/ (embedded into
 # the binary for the settings window); reuse the very same file as the AppImage

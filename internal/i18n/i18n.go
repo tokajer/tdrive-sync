@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package i18n holds the message catalogs for everything the user sees: the
 // settings UI, the tray menu, desktop notifications and the status texts they
 // display. The language is resolved once from the system locale — German when

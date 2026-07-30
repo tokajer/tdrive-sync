@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Dolphin integration for TDrive Sync: an overlay-icon plugin that marks files
 # as streamed / available offline, plus a context-menu plugin for pinning them.
 #

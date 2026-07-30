@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package updater implements self-updating for the AppImage build. It checks the
 // project's GitHub releases for a newer version (optionally including
 // prereleases), downloads the matching .AppImage asset and atomically replaces

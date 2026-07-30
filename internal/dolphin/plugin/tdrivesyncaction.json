@@ -3,7 +3,7 @@
         "Description": "Keep Google Drive files offline, or release them to online-only",
         "Description[de]": "Google-Drive-Dateien offline behalten oder wieder nur online halten",
         "Id": "tdrivesyncaction",
-        "License": "MIT",
+        "License": "GPLv3",
         "MimeTypes": [
             "application/octet-stream",
             "text/plain",

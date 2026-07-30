@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package dolphin installs the KDE/Dolphin file-manager integration: an
 // overlay-icon plugin that marks every file in the sync folder as streamed or
 // available offline, plus a context-menu plugin for pinning files offline.

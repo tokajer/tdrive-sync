@@ -2,7 +2,8 @@
     Overlay icons for the TDrive Sync folder in Dolphin: shows per file whether
     it is streamed from Google Drive or available offline.
 
-    SPDX-License-Identifier: MIT
+    SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+    SPDX-License-Identifier: GPL-3.0-or-later
 */
 
 #include "tdrivestate.h"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package manager orchestrates the sync backend: it owns the current status,
 // starts/stops the active sync mode (stream mount or mirror bisync), handles
 // login/logout, and manages offline-pinned paths.

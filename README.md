@@ -397,5 +397,16 @@ they are diagnostic.
 
 ## License
 
-The app code is under the MIT license. The bundled rclone is under the MIT
-license (© Nick Craig-Wood).
+Copyright © 2026 tokajer
+
+The app code is free software under the **GNU General Public License, version 3
+or (at your option) any later version** – see [LICENSE](LICENSE). It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE.
+
+The complete source code is at <https://github.com/tokajer/tdrive-sync>.
+
+The AppImage additionally bundles, unmodified and as a separate work:
+
+- [rclone](https://rclone.org) – MIT license, © Nick Craig-Wood.

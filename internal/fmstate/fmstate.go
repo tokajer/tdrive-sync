@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 tokajer <tokajer@tokajer.at>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package fmstate publishes what a file-manager integration needs to show a
 // per-file sync indicator ("streamed" vs "available offline"), and resolves that
 // state for a local path.
