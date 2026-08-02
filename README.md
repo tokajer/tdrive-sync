@@ -410,3 +410,7 @@ The complete source code is at <https://github.com/tokajer/tdrive-sync>.
 The AppImage additionally bundles, unmodified and as a separate work:
 
 - [rclone](https://rclone.org) – MIT license, © Nick Craig-Wood.
+
+## If you like my work you can
+
+[![Buy me a coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=tokajer&button_colour=1e4c7a&font_colour=ffffff&font_family=Inter&outline_colour=ffffff&coffee_colour=FFDD00)](https://www.buymeacoffee.com/tokajer)
