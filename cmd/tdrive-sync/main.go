@@ -7,9 +7,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"tdrive-sync/internal/app"
 	"tdrive-sync/internal/config"
 	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/i18n"
@@ -37,9 +36,6 @@ import (
 // version is injected at build time via -ldflags "-X main.version=<tag>".
 // Local builds keep the default so they are clearly identifiable.
 var version = "local-dev-build"
-
-// appName is the window title and the sender shown on desktop notifications.
-const appName = "TDrive Sync"
 
 func main() {
 	log.SetFlags(log.Ltime)
@@ -88,14 +84,7 @@ func loadOrExit() *config.Config {
 // runDaemon starts the sync backend, the settings web server and the tray icon.
 func runDaemon() {
 	cfg := loadOrExit()
-
-	// Persist the daemon log to a day-rotating file with 7-day retention, in
-	// addition to stderr/journal. Best-effort: on failure we keep stderr only.
-	if dir, err := config.LogDir(); err == nil {
-		if lw, err := logfile.New(dir, 7); err == nil {
-			log.SetOutput(io.MultiWriter(os.Stderr, lw))
-		}
-	}
+	persistLog()
 
 	// Single instance, decided by the settings socket rather than by asking
 	// over HTTP first. The probe cannot be trusted on its own: a daemon that is
@@ -113,19 +102,9 @@ func runDaemon() {
 	}
 	defer func() { _ = ln.Close() }()
 
-	// Register a user-scope .desktop file + icon so the Wayland compositor can
-	// show the app logo in the settings window's titlebar/taskbar (best-effort).
-	if err := window.InstallDesktopEntry(); err != nil {
-		log.Printf("desktop integration not possible: %v", err)
-	}
-
-	// Start on boot: register (or remove) the XDG autostart entry per config.
-	if err := window.InstallAutostart(cfg.AutostartEnabled()); err != nil {
-		log.Printf("autostart entry not possible: %v", err)
-	}
-
 	logs := logbuf.New(1000)
-	notifier := notify.NewDBus(appName, "tdrive-sync")
+	installDesktopIntegration(cfg, logs)
+	notifier := notify.NewDBus(app.Name, app.ID)
 
 	mgr, err := manager.New(cfg, notifier, logs)
 	if err != nil {
@@ -135,33 +114,8 @@ func runDaemon() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// JSON status API: mirror every status change to status.json for monitoring.
-	// Status updates arrive every few seconds, so a persistent write failure
-	// (e.g. a full disk) is logged once per distinct error rather than on every
-	// single update, and a snapshot identical to the last one written is
-	// skipped entirely (mirrors fmstate.Publisher).
-	var lastWriteErr string
-	var lastBytes []byte
-	mgr.Subscribe(func(s manager.Status) {
-		data, err := json.MarshalIndent(s, "", "  ")
-		if err != nil {
-			log.Printf("could not encode status.json: %v", err)
-			return
-		}
-		if bytes.Equal(data, lastBytes) {
-			return
-		}
-		if err := writeStatusFile(data); err != nil {
-			if msg := err.Error(); msg != lastWriteErr {
-				lastWriteErr = msg
-				log.Printf("could not write status.json: %v", err)
-			}
-			return
-		}
-		lastWriteErr = ""
-		lastBytes = data
-	})
-
+	status := &statusFile{errorf: logs.Errorf}
+	mgr.Subscribe(status.write)
 	mgr.Start(ctx)
 
 	// Keep Dolphin's "no previews here" markers in step with the folders in the
@@ -172,50 +126,79 @@ func runDaemon() {
 
 	// Self-update (AppImage builds): check GitHub releases, and let the user
 	// apply an update with one click from the settings window.
-	upd := updater.New(version, cfg.UpdatePrerelease(), logs.Logf)
+	upd := updater.New(version, cfg.UpdatePrerelease, logs.Logf)
 	if !cfg.UpdateCheckDisabled() && upd.Status().CanSelfUpdate {
 		go runUpdateChecks(ctx, upd, notifier, logs.Logf)
 	}
 
-	web := webui.New(mgr, cfg, logs, upd, previews, restartFunc(cancel))
-
-	// Tray icon (best-effort; the daemon runs fine without it).
-	go func() {
-		act := tray.Actions{
-			OpenFolder:   func() { openFolder(mgr.LocalDir()) },
-			SyncNow:      func() { mgr.SyncNow() },
-			TogglePause:  func() { togglePause(mgr) },
-			OpenSettings: func() { spawnWindow() },
-			Logout: func() {
-				c, cl := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cl()
-				_ = mgr.Logout(c)
-			},
-			Quit: cancel,
-		}
-		if err := tray.Run(ctx, mgr, act, logs.Logf); err != nil {
-			log.Printf("no tray icon: %v (the daemon keeps running, control it via %s)", err, web.URL())
-		}
-	}()
+	web := webui.New(mgr, cfg, logs, upd, previews, restartFunc(cancel, logs))
+	go runTray(ctx, mgr, cancel, web.URL(), logs)
 
 	// On first launch, open the settings window so the user can sign in.
 	if !cfg.Configured() {
-		log.Println("not signed in yet – opening the settings window")
+		logs.Logf("not signed in yet – opening the settings window")
 		go func() {
 			if !waitOrDone(ctx, firstWindowDelay) {
 				spawnWindow()
 			}
 		}()
 	} else {
-		log.Printf("ready. Settings via the tray icon or: %s open", exeName())
+		logs.Logf("ready. Settings via the tray icon or: %s open", app.Exec())
 	}
 
 	if err := web.Serve(ctx, ln); err != nil {
-		log.Printf("web UI error: %v", err)
+		logs.Errorf("web UI error: %v", err)
 	}
 	mgr.Shutdown()
 	closeWindows()
-	log.Println("stopped.")
+	logs.Logf("stopped.")
+}
+
+// persistLog writes the daemon log to a day-rotating file with 7-day
+// retention, in addition to stderr/journal. Best-effort: on failure we keep
+// stderr only.
+func persistLog() {
+	dir, err := config.LogDir()
+	if err != nil {
+		return
+	}
+	if lw, err := logfile.New(dir, 7); err == nil {
+		log.SetOutput(io.MultiWriter(os.Stderr, lw))
+	}
+}
+
+// installDesktopIntegration registers the desktop entry and icon - so the
+// Wayland compositor can show the logo in the settings window's titlebar - and
+// brings the autostart entry in line with the configuration. Best-effort.
+func installDesktopIntegration(cfg *config.Config, logs *logbuf.Buffer) {
+	if err := window.InstallDesktopEntry(); err != nil {
+		logs.Errorf("desktop integration not possible: %v", err)
+	}
+	if err := window.InstallAutostart(cfg.AutostartEnabled()); err != nil {
+		logs.Errorf("autostart entry not possible: %v", err)
+	}
+}
+
+// runTray shows the tray icon until ctx ends. Best-effort: the daemon runs
+// fine without one, so a missing tray host is only logged.
+func runTray(ctx context.Context, mgr *manager.Manager, quit context.CancelFunc, webURL string, logs *logbuf.Buffer) {
+	act := tray.Actions{
+		OpenFolder:   func() { openFolder(mgr.LocalDir(), logs) },
+		SyncNow:      mgr.SyncNow,
+		TogglePause:  func() { togglePause(mgr) },
+		OpenSettings: spawnWindow,
+		Logout: func() {
+			c, cl := context.WithTimeout(ctx, 30*time.Second)
+			defer cl()
+			if err := mgr.Logout(c); err != nil {
+				logs.Errorf("sign-out failed: %v", err)
+			}
+		},
+		Quit: quit,
+	}
+	if err := tray.Run(ctx, mgr.Subscribe, act, logs.Logf); err != nil {
+		logs.Logf("no tray icon: %v (the daemon keeps running, control it via %s)", err, webURL)
+	}
 }
 
 // firstWindowDelay lets the web server come up before the first-launch window
@@ -224,30 +207,22 @@ const firstWindowDelay = 900 * time.Millisecond
 
 // restartFunc returns the callback the settings UI uses to restart the daemon
 // after an update was installed.
-func restartFunc(cancel context.CancelFunc) func() {
+func restartFunc(cancel context.CancelFunc, logs *logbuf.Buffer) func() {
 	return func() {
 		// Close any open settings window so the update restart is clean and no
 		// stale window lingers against the old daemon.
 		closeWindows()
-		exe := os.Getenv("APPIMAGE")
-		if exe == "" {
-			if e, err := os.Executable(); err == nil {
-				exe = e
-			}
-		}
-		if exe != "" {
-			// Relaunch through a detached copy of ourselves, which waits for the
-			// old daemon to release the port and unmount before starting.
-			//
-			// Not through a shell: the path would have to be quoted for sh, and
-			// Go's %q is not shell quoting - an AppImage stored under a path
-			// containing "$" or a backtick would be expanded rather than run.
-			cmd := exec.Command(exe, "restart-wait")
-			cmd.Env = os.Environ()
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			if err := cmd.Start(); err != nil {
-				log.Printf("could not schedule the restart: %v", err)
-			}
+		// Relaunch through a detached copy of ourselves, which waits for the old
+		// daemon to release the port and unmount before starting.
+		//
+		// Not through a shell: the path would have to be quoted for sh, and Go's
+		// %q is not shell quoting - an AppImage stored under a path containing
+		// "$" or a backtick would be expanded rather than run.
+		cmd := exec.Command(app.Exec(), "restart-wait")
+		cmd.Env = os.Environ()
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			logs.Errorf("could not schedule the restart: %v", err)
 		}
 		cancel()
 	}
@@ -288,20 +263,6 @@ func waitOrDone(ctx context.Context, d time.Duration) bool {
 	case <-time.After(d):
 		return false
 	}
-}
-
-// writeStatusFile atomically writes the already-encoded status to status.json
-// so external tooling can monitor the sync without talking to the HTTP API.
-func writeStatusFile(data []byte) error {
-	path, err := config.StatusPath()
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func togglePause(mgr *manager.Manager) {
@@ -372,16 +333,9 @@ func closeWindows() {
 	}
 }
 
-func exeName() string {
-	if exe, err := os.Executable(); err == nil {
-		return exe
-	}
-	return "tdrive-sync"
-}
-
 // openFolder opens a local folder in the file manager (tray action).
-func openFolder(path string) {
+func openFolder(path string, logs *logbuf.Buffer) {
 	if err := window.OpenPath(path); err != nil {
-		log.Printf("could not open %s: %v", path, err)
+		logs.Errorf("could not open %s: %v", path, err)
 	}
 }

@@ -38,17 +38,17 @@ type Runtime struct {
 // to status.json and served by the settings API, so the field names are a
 // contract with anything monitoring the daemon.
 type Status struct {
-	State        State           `json:"state"`
-	Mode         config.SyncMode `json:"mode"`
-	ConflictMode string          `json:"conflict_mode"`
-	Message      string          `json:"message"`
-	Account      string          `json:"account"`
-	LocalDir     string          `json:"local_dir"`
-	Bytes        int64           `json:"bytes"`
-	Speed        float64         `json:"speed"`
-	Errors       int64           `json:"errors"`
-	LastSync     time.Time       `json:"last_sync"`
-	Offline      []string        `json:"offline"`
+	State        State               `json:"state"`
+	Mode         config.SyncMode     `json:"mode"`
+	ConflictMode config.ConflictMode `json:"conflict_mode"`
+	Message      string              `json:"message"`
+	Account      string              `json:"account"`
+	LocalDir     string              `json:"local_dir"`
+	Bytes        int64               `json:"bytes"`
+	Speed        float64             `json:"speed"`
+	Errors       int64               `json:"errors"`
+	LastSync     time.Time           `json:"last_sync"`
+	Offline      []string            `json:"offline"`
 }
 
 // Active reports whether the daemon is syncing, as opposed to signed out or shut
@@ -59,19 +59,20 @@ func (s Status) Active() bool {
 
 // statusStore owns the runtime status and the observers watching it.
 // Config-derived fields are read via settings at snapshot time, never stored.
+//
+// Observers are called from a goroutine of their own, never from the caller of
+// Update: they write files and talk to DBus, and a stalled disk or session bus
+// must not hold up the sync runners that report their state through here.
 type statusStore struct {
 	// settings returns the configuration half of a snapshot, with the runtime
 	// half left zero. Called under the lock, so it must not call back into the
 	// store.
 	settings func() Status
 
-	mu        sync.Mutex
-	rt        Runtime
-	listeners []func(Status)
-
-	// deliver serialises snapshot+delivery so listeners see updates in order;
-	// listeners must not call back into the store.
-	deliver sync.Mutex
+	mu          sync.Mutex
+	rt          Runtime
+	subscribers []*subscriber
+	closed      bool
 }
 
 func newStatusStore(settings func() Status) *statusStore {
@@ -97,17 +98,35 @@ func (s *statusStore) snapshotLocked() Status {
 	return out
 }
 
-// Subscribe registers fn for every subsequent change, and delivers the current
-// snapshot right away so an observer never starts out blank. fn must not call
-// back into the store (see deliver) - it would deadlock.
-func (s *statusStore) Subscribe(fn func(Status)) {
-	s.deliver.Lock()
-	defer s.deliver.Unlock()
+// Subscribe registers fn for every subsequent change, and hands it the current
+// snapshot first so an observer never starts out blank. The returned function
+// unregisters fn again.
+//
+// fn sees snapshots in order, but a slow fn may skip intermediate ones: it is
+// always given the newest state, which is all an observer of a status needs.
+func (s *statusStore) Subscribe(fn func(Status)) (unsubscribe func()) {
+	sub := newSubscriber(fn)
 	s.mu.Lock()
-	s.listeners = append(s.listeners, fn)
-	cur := s.snapshotLocked()
+	if s.closed {
+		s.mu.Unlock()
+		return func() {}
+	}
+	s.subscribers = append(s.subscribers, sub)
+	sub.offer(s.snapshotLocked())
 	s.mu.Unlock()
-	fn(cur)
+	go sub.run()
+
+	return func() {
+		s.mu.Lock()
+		for i, x := range s.subscribers {
+			if x == sub {
+				s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+		sub.close()
+	}
 }
 
 // SetState records a coarse state with its message and notifies observers.
@@ -118,9 +137,7 @@ func (s *statusStore) SetState(state State, msg string) {
 	})
 }
 
-// Update applies fn to the runtime status and notifies observers. Returning
-// false from fn skips the notification, for a change that turned out to be no
-// change at all.
+// Update applies fn to the runtime status and notifies observers.
 func (s *statusStore) Update(fn func(*Runtime)) {
 	s.UpdateIf(func(rt *Runtime) bool {
 		fn(rt)
@@ -129,23 +146,18 @@ func (s *statusStore) Update(fn func(*Runtime)) {
 }
 
 // UpdateIf applies fn and notifies observers only when fn reports a change.
+// It never waits for an observer.
 func (s *statusStore) UpdateIf(fn func(*Runtime) bool) {
 	s.mu.Lock()
-	changed := fn(&s.rt)
-	s.mu.Unlock()
-	if !changed {
+	defer s.mu.Unlock()
+	if !fn(&s.rt) || s.closed {
 		return
 	}
-
-	s.deliver.Lock()
-	defer s.deliver.Unlock()
-	s.mu.Lock()
+	// Offered under the lock that took the snapshot, so a newer snapshot can
+	// never be overtaken by an older one.
 	cur := s.snapshotLocked()
-	ls := append([]func(Status){}, s.listeners...)
-	s.mu.Unlock()
-
-	for _, fn := range ls {
-		fn(cur)
+	for _, sub := range s.subscribers {
+		sub.offer(cur)
 	}
 }
 
@@ -153,4 +165,109 @@ func (s *statusStore) UpdateIf(fn func(*Runtime) bool) {
 // config change moved something the snapshot derives.
 func (s *statusStore) Notify() {
 	s.Update(func(*Runtime) {})
+}
+
+// Flush waits until every observer has handled the newest snapshot.
+func (s *statusStore) Flush() {
+	s.mu.Lock()
+	subs := append([]*subscriber{}, s.subscribers...)
+	s.mu.Unlock()
+	for _, sub := range subs {
+		sub.flush()
+	}
+}
+
+// Close stops delivering: observers finish what is queued, and once Close
+// returns none of them runs again. Later updates still change the status, they
+// just reach nobody - shutdown relies on that to publish its final state
+// without a late delivery overwriting it.
+func (s *statusStore) Close() {
+	s.mu.Lock()
+	s.closed = true
+	subs := s.subscribers
+	s.subscribers = nil
+	s.mu.Unlock()
+	for _, sub := range subs {
+		sub.close()
+		sub.wait()
+	}
+}
+
+// subscriber delivers snapshots to one observer from its own goroutine,
+// keeping only the newest undelivered one.
+type subscriber struct {
+	fn func(Status)
+
+	mu      sync.Mutex
+	cond    *sync.Cond
+	next    Status
+	pending bool // next has not been handed to fn yet
+	busy    bool // fn is running
+	closed  bool
+	exited  bool
+}
+
+func newSubscriber(fn func(Status)) *subscriber {
+	sub := &subscriber{fn: fn}
+	sub.cond = sync.NewCond(&sub.mu)
+	return sub
+}
+
+// offer replaces whatever is still queued with st.
+func (sub *subscriber) offer(st Status) {
+	sub.mu.Lock()
+	sub.next = st
+	sub.pending = true
+	sub.mu.Unlock()
+	sub.cond.Broadcast()
+}
+
+// run is the delivery loop. It drains what is queued before it honours close.
+func (sub *subscriber) run() {
+	sub.mu.Lock()
+	defer func() {
+		sub.exited = true
+		sub.mu.Unlock()
+		sub.cond.Broadcast()
+	}()
+	for {
+		for !sub.pending && !sub.closed {
+			sub.cond.Wait()
+		}
+		if !sub.pending {
+			return
+		}
+		st := sub.next
+		sub.pending, sub.busy = false, true
+		sub.mu.Unlock()
+
+		sub.fn(st)
+
+		sub.mu.Lock()
+		sub.busy = false
+		sub.cond.Broadcast()
+	}
+}
+
+func (sub *subscriber) flush() {
+	sub.mu.Lock()
+	for (sub.pending || sub.busy) && !sub.exited {
+		sub.cond.Wait()
+	}
+	sub.mu.Unlock()
+}
+
+func (sub *subscriber) close() {
+	sub.mu.Lock()
+	sub.closed = true
+	sub.mu.Unlock()
+	sub.cond.Broadcast()
+}
+
+func (sub *subscriber) wait() {
+	sub.mu.Lock()
+	for !sub.exited {
+		sub.cond.Wait()
+	}
+	sub.mu.Unlock()
 }

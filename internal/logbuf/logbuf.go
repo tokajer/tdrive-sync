@@ -45,7 +45,7 @@ func New(max int) *Buffer {
 
 // Logf stores a message whose severity has to be guessed from its text. This is
 // for output we merely pass through, above all rclone's own log lines. Where the
-// caller knows the severity it should say so via Errorf or Warnf, because the
+// caller knows the line is an error it should say so via Errorf, because the
 // guess has no way to tell "0 errors" from a real failure.
 func (b *Buffer) Logf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
@@ -56,11 +56,6 @@ func (b *Buffer) Logf(format string, args ...any) {
 // Errorf stores a message the caller knows to be an error.
 func (b *Buffer) Errorf(format string, args ...any) {
 	b.emit(LevelError, fmt.Sprintf(format, args...))
-}
-
-// Warnf stores a message the caller knows to be a warning.
-func (b *Buffer) Warnf(format string, args ...any) {
-	b.emit(LevelWarn, fmt.Sprintf(format, args...))
 }
 
 // emit mirrors a classified message to the standard logger and stores it.

@@ -5,8 +5,9 @@
 // starts/stops the active sync mode (stream mount or mirror bisync), handles
 // login/logout, and manages offline-pinned paths.
 //
-// The modes themselves live behind the Runner interface (stream.go, mirror.go),
-// so the manager decides which one is active without knowing what either does.
+// The modes themselves live behind the syncMode interface (stream.go,
+// mirror.go, offline.go, conflicts.go), so the manager decides which one is
+// active, and what it can do, without knowing how either works.
 package manager
 
 import (
@@ -15,11 +16,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
 
+	"tdrive-sync/internal/app"
 	"tdrive-sync/internal/config"
 	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
@@ -67,6 +68,24 @@ type Control interface {
 	ResetStats(ctx context.Context) error
 }
 
+// Account is the signed-in Google account and the Drive listing behind it. The
+// real one is *rclone.Client; like Engine and Control it is an interface so
+// sign-in, sign-out and start-up can be tested without rclone.
+type Account interface {
+	// Login runs the interactive OAuth flow, streaming its output to onLine.
+	Login(ctx context.Context, opts rclone.LoginOptions, onLine func(string)) error
+	// Logout deletes the stored remote.
+	Logout(ctx context.Context) error
+	// RemoteExists reports whether a remote is stored.
+	RemoteExists() bool
+	// UserEmail returns the account's address, "" when it cannot be read.
+	UserEmail(ctx context.Context) string
+	// List returns the immediate children of a Drive-relative directory.
+	List(ctx context.Context, rel string) ([]rclone.Entry, error)
+	// ListDirs returns every folder below a Drive-relative path.
+	ListDirs(ctx context.Context, rel string) ([]string, error)
+}
+
 // Runner drives one sync mode.
 type Runner interface {
 	// Run blocks until ctx is cancelled, keeping the mode alive in between.
@@ -76,18 +95,53 @@ type Runner interface {
 	SyncNow()
 }
 
-// runners maps each sync mode to its implementation. Adding a mode means adding
-// a Runner and one line here; nothing else in the package switches on the mode.
-var runners = map[config.SyncMode]func(*Manager) Runner{
-	config.ModeStream: func(m *Manager) Runner { return newStreamRunner(m) },
-	config.ModeMirror: func(m *Manager) Runner { return newMirrorRunner(m) },
+// syncMode is one way of making the Drive available locally. It lives as long
+// as the configuration selects it, not just while a runner runs: pinning a file
+// or resolving a conflict has to work while syncing is paused, too.
+//
+// What a mode can do beyond running is expressed by the optional interfaces
+// below; the manager asks for them instead of switching on the mode's name.
+type syncMode interface {
+	// newRunner builds the runner that keeps this mode alive.
+	newRunner() Runner
+}
+
+// pinner is a mode in which "keep offline" means something: it keeps a cache
+// that pinned paths are read into and released paths are freed from.
+type pinner interface {
+	// applyPin reads rel into the cache (on) or frees it again (off).
+	applyPin(ctx context.Context, rel string, on bool)
+}
+
+// conflictKeeper is a mode that leaves conflicting copies for the user to
+// resolve, and whose runner has to restart when the conflict mode changes.
+type conflictKeeper interface {
+	conflicts() []Conflict
+	resolveConflict(rel, action string) error
+}
+
+// modes maps each sync mode to its implementation. Adding a mode means adding a
+// syncMode and one line here; nothing else in the package switches on the mode.
+var modes = map[config.SyncMode]func(*Manager) syncMode{
+	config.ModeStream: func(m *Manager) syncMode { return streamMode{m} },
+	config.ModeMirror: func(m *Manager) syncMode { return mirrorMode{m} },
+}
+
+// currentMode returns the configured mode, nil if the configuration names one
+// this build does not know.
+func (m *Manager) currentMode() syncMode {
+	build, ok := modes[m.cfg.Mode()]
+	if !ok {
+		return nil
+	}
+	return build(m)
 }
 
 // Manager is the central controller. All exported methods are safe for
 // concurrent use.
 type Manager struct {
 	cfg      *config.Config
-	rc       *rclone.Client
+	account  Account
 	engine   Engine
 	ctl      Control
 	rcAddr   string
@@ -151,7 +205,7 @@ func New(cfg *config.Config, notifier notify.Notifier, log Logger) (*Manager, er
 
 	m := &Manager{
 		cfg:      cfg,
-		rc:       rc,
+		account:  rc,
 		engine:   rc,
 		ctl:      rclone.NewRC(rcAddr, rcUser, rcPass),
 		rcAddr:   rcAddr,
@@ -159,7 +213,7 @@ func New(cfg *config.Config, notifier notify.Notifier, log Logger) (*Manager, er
 		cache:    fmstate.Cache{Dir: cacheDir, Remote: cfg.RemoteName()},
 		notifier: notifier,
 		log:      log,
-		exe:      execPath(),
+		exe:      app.Exec(),
 		fmPub:    pub,
 	}
 	m.status = newStatusStore(m.settings)
@@ -187,20 +241,9 @@ func randomSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// execPath is the command the file-manager integration invokes for context-menu
-// actions. The outer AppImage path is preferred: it survives a restart, while
-// the executable inside points into a mount that vanishes on exit.
-func execPath() string {
-	if p := os.Getenv("APPIMAGE"); p != "" {
-		return p
-	}
-	exe, _ := os.Executable()
-	return exe
-}
-
 // Browse lists the immediate children of a Drive-relative directory.
 func (m *Manager) Browse(ctx context.Context, rel string) ([]rclone.Entry, error) {
-	return m.rc.List(ctx, rel)
+	return m.account.List(ctx, rel)
 }
 
 // LocalDir is the configured sync folder.
@@ -219,7 +262,7 @@ func (m *Manager) SyncFolder() string {
 
 // ListDirs returns every folder below a Drive-relative path.
 func (m *Manager) ListDirs(ctx context.Context, rel string) ([]string, error) {
-	return m.rc.ListDirs(ctx, rel)
+	return m.account.ListDirs(ctx, rel)
 }
 
 // Start begins syncing according to the current config. It returns immediately;
@@ -232,7 +275,7 @@ func (m *Manager) Start(ctx context.Context) {
 	// builds a Manager that never starts, and must not overwrite the running
 	// daemon's file-manager.json with an inactive snapshot.
 	m.status.Subscribe(m.publishFM)
-	if !m.cfg.Configured() || !m.rc.RemoteExists() {
+	if !m.cfg.Configured() || !m.account.RemoteExists() {
 		m.status.SetState(StateDisconnected, i18n.T("status.signin_required"))
 		return
 	}
@@ -281,14 +324,13 @@ func (m *Manager) startLocked() {
 		m.mu.Unlock()
 		return
 	}
-	mode := m.cfg.Mode()
-	build, ok := runners[mode]
-	if !ok {
+	mode := m.currentMode()
+	if mode == nil {
 		m.mu.Unlock()
-		m.status.SetState(StateError, i18n.T("status.unknown_mode", mode))
+		m.status.SetState(StateError, i18n.T("status.unknown_mode", m.cfg.Mode()))
 		return
 	}
-	runner := build(m)
+	runner := mode.newRunner()
 	ctx, cancel := context.WithCancel(parent)
 	m.runCancel = cancel
 	m.active = runner
@@ -306,6 +348,8 @@ func (m *Manager) Shutdown() {
 	m.lifecycle.Lock()
 	m.stopLocked()
 	m.lifecycle.Unlock()
+	// Closed first, so no delivery still in flight can overwrite what follows.
+	m.status.Close()
 	// Tell the file-manager integration to stop showing indicators: without a
 	// mount there is nothing left to indicate.
 	m.publishFM(Status{})
@@ -340,12 +384,12 @@ func (m *Manager) SetLocalDir(path string) error {
 
 // SetConflictMode switches how mirror-mode conflicts are resolved and restarts
 // mirror syncing so the new bisync flags take effect.
-func (m *Manager) SetConflictMode(mode string) error {
+func (m *Manager) SetConflictMode(mode config.ConflictMode) error {
 	if err := m.cfg.SetConflictMode(mode); err != nil {
 		return err
 	}
 	m.status.Notify()
-	if m.cfg.Configured() && m.cfg.Mode() == config.ModeMirror {
+	if _, ok := m.currentMode().(conflictKeeper); ok && m.cfg.Configured() {
 		m.restart()
 	}
 	return nil
@@ -410,13 +454,13 @@ func (m *Manager) Login(ctx context.Context, openerDir string, onLine func(strin
 		ClientSecret: creds.ClientSecret,
 		OpenerDir:    openerDir,
 	}
-	if err := m.rc.Login(ctx, opts, onLine); err != nil {
+	if err := m.account.Login(ctx, opts, onLine); err != nil {
 		return err
 	}
-	if !m.rc.RemoteExists() {
+	if !m.account.RemoteExists() {
 		return errors.New(i18n.T("err.login_incomplete"))
 	}
-	email := m.rc.UserEmail(ctx)
+	email := m.account.UserEmail(ctx)
 	if email == "" {
 		email = "Google Drive"
 	}
@@ -442,7 +486,11 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.paused = false
 	m.mu.Unlock()
 	m.stopLocked()
-	_ = m.rc.Logout(ctx)
+	if err := m.account.Logout(ctx); err != nil {
+		// Signed out here regardless: the account is unusable to us either way,
+		// but the stale token left in rclone.conf is worth knowing about.
+		m.log.Errorf("could not remove the stored account: %v", err)
+	}
 	if err := m.cfg.SetAccountEmail(""); err != nil {
 		return err
 	}
@@ -468,11 +516,10 @@ func (m *Manager) SetGoogleCreds(creds config.GoogleCreds) error {
 // Status returns the current snapshot.
 func (m *Manager) Status() Status { return m.status.Get() }
 
-// Subscribe registers fn to receive the current status and every later change.
-// fn must not call back into the manager's status (directly or through a
-// method that updates it) - the delivery is serialised under a lock that call
-// would try to retake, which deadlocks.
-func (m *Manager) Subscribe(fn func(Status)) { m.status.Subscribe(fn) }
+// Subscribe registers fn to receive the current status and every later change,
+// on a goroutine of its own; see statusStore.Subscribe. The returned function
+// unregisters it.
+func (m *Manager) Subscribe(fn func(Status)) (unsubscribe func()) { return m.status.Subscribe(fn) }
 
 // setState is the runners' shortcut into the status store; an error state is
 // also logged, since that is the one the user will come asking about.

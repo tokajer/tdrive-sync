@@ -93,10 +93,10 @@ QString relativePath(const Info &info, const QString &localFile)
 }
 
 /**
- * Normalises a Drive-relative path for prefix comparison. Mirrors
- * fmstate.cleanRel / config.cleanOfflinePath on the Go side: "Docs", "Docs/"
- * and "/Docs" all name the same folder, and the two sides have to agree on that
- * or a pin is honoured by the daemon and invisible here.
+ * Normalises a Drive-relative path for prefix comparison. Mirrors pins.Clean
+ * on the Go side: "Docs", "Docs/" and "/Docs" all name the same folder, and
+ * the two sides have to agree on that or a pin is honoured by the daemon and
+ * invisible here.
  */
 static QString cleanRel(const QString &p)
 {

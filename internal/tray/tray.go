@@ -19,12 +19,10 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
+	"tdrive-sync/internal/app"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/manager"
 )
-
-// appName is the tray item title shown by the host.
-const appName = "TDrive Sync"
 
 const (
 	sniPath  = "/StatusNotifierItem"
@@ -49,8 +47,9 @@ type iconPix struct {
 }
 
 // Run installs the tray icon and blocks until ctx is cancelled. It returns an
-// error if no tray host accepted the registration.
-func Run(ctx context.Context, mgr *manager.Manager, act Actions, logf func(string, ...any)) error {
+// error if no tray host accepted the registration. subscribe is how it learns
+// about status changes (manager.Manager.Subscribe).
+func Run(ctx context.Context, subscribe func(func(manager.Status)) func(), act Actions, logf func(string, ...any)) error {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -97,9 +96,8 @@ func Run(ctx context.Context, mgr *manager.Manager, act Actions, logf func(strin
 	go item.animate(ctx)
 
 	// Reflect manager status into the icon, tooltip and menu.
-	mgr.Subscribe(func(st manager.Status) {
-		item.update(st)
-	})
+	unsubscribe := subscribe(item.update)
+	defer unsubscribe()
 
 	<-ctx.Done()
 	return nil
@@ -124,12 +122,12 @@ func (s *snItem) propSpec() map[string]map[string]*prop.Prop {
 		sniIface: {
 			"Category":   {Value: "ApplicationStatus", Writable: false},
 			"Id":         {Value: "tdrive-sync", Writable: false},
-			"Title":      {Value: appName, Writable: false},
+			"Title":      {Value: app.Name, Writable: false},
 			"Status":     {Value: "Active", Writable: false},
 			"WindowId":   {Value: int32(0), Writable: false},
 			"IconName":   {Value: "", Writable: false},
 			"IconPixmap": {Value: greyFrame(), Writable: false},
-			"ToolTip":    {Value: makeToolTip(appName, i18n.T("state.disconnected")), Writable: false},
+			"ToolTip":    {Value: makeToolTip(app.Name, i18n.T("state.disconnected")), Writable: false},
 			"ItemIsMenu": {Value: true, Writable: false},
 			"Menu":       {Value: dbus.ObjectPath(menuPath), Writable: false},
 		},
@@ -166,7 +164,7 @@ func (s *snItem) update(st manager.Status) {
 	s.mu.Unlock()
 
 	if msgChanged && s.props != nil {
-		s.props.SetMust(sniIface, "ToolTip", makeToolTip(appName, tip))
+		s.props.SetMust(sniIface, "ToolTip", makeToolTip(app.Name, tip))
 		if s.conn != nil {
 			_ = s.conn.Emit(sniPath, sniIface+".NewToolTip")
 		}

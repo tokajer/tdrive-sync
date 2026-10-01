@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"tdrive-sync/internal/fsutil"
 	"tdrive-sync/internal/xdg"
 )
 
@@ -325,11 +326,7 @@ func installFile(from, to string) error {
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
 	}
-	tmp := to + ".new"
-	if err := os.WriteFile(tmp, data, 0o755); err != nil {
-		return err
-	}
-	return os.Rename(tmp, to)
+	return fsutil.WriteAtomic(to, data, 0o755)
 }
 
 // writeEnvFiles puts the plugin directory on QT_PLUGIN_PATH for future logins:
@@ -357,7 +354,7 @@ func writeFile(path, content string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), mode)
+	return fsutil.WriteAtomic(path, []byte(content), mode)
 }
 
 // setSessionEnv adds the plugin directory to the running session's environment,

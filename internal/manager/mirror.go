@@ -63,6 +63,11 @@ type mirrorRunner struct {
 	busy atomic.Bool
 }
 
+// mirrorMode is the full two-way-synced local copy.
+type mirrorMode struct{ m *Manager }
+
+func (mm mirrorMode) newRunner() Runner { return newMirrorRunner(mm.m) }
+
 func newMirrorRunner(m *Manager) *mirrorRunner {
 	return &mirrorRunner{m: m, trigger: make(chan struct{}, 1)}
 }

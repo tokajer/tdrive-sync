@@ -363,7 +363,10 @@ func TestPublisherSkipsUnchangedWrites(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 
-	var p Publisher
+	p, err := NewPublisher("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	info := Info{Active: true, Mode: "stream", Root: "/home/u/GoogleDrive", Remote: "gdrive"}
 	if err := p.Publish(info); err != nil {
 		t.Fatal(err)
@@ -441,7 +444,7 @@ func TestPublisherConcurrent(t *testing.T) {
 }
 
 // TestIsPinnedNormalises covers pins that reach the published file in a form an
-// older version wrote. The daemon normalises them (see config.normalizeOffline),
+// older version wrote. The daemon normalises them (see pins.Normalize),
 // so the indicator has to match the same way or a pin is honoured by the daemon
 // and invisible on screen.
 func TestIsPinnedNormalises(t *testing.T) {

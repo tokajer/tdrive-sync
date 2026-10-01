@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"tdrive-sync/internal/config"
 	"tdrive-sync/internal/i18n"
 )
 
@@ -37,16 +36,36 @@ type Conflict struct {
 	MTime time.Time `json:"mtime"` // last-modified time
 }
 
-// Conflicts scans the local mirror for unresolved conflict files. It is only
-// meaningful in mirror mode; in stream mode the local dir is a mount and holds
-// no such files.
+// Conflicts lists the unresolved conflict files, in a mode that keeps them (see
+// conflictKeeper). Others have none: walking a stream mount for them would pull
+// every file down on demand.
 func (m *Manager) Conflicts() []Conflict {
-	// Only mirror mode has real local files; walking a stream mount would pull
-	// every file down on demand.
-	if m.cfg.Mode() != config.ModeMirror {
+	ck, ok := m.currentMode().(conflictKeeper)
+	if !ok {
 		return nil
 	}
-	root := m.cfg.LocalDir()
+	return ck.conflicts()
+}
+
+// ResolveConflict resolves a single conflict file. action "keep" promotes the
+// file to its original name and removes the sibling conflict copies; action
+// "delete" just removes the copy. Either way a fresh sync is triggered so the
+// decision propagates to Drive.
+func (m *Manager) ResolveConflict(rel, action string) error {
+	ck, ok := m.currentMode().(conflictKeeper)
+	if !ok {
+		return errors.New(i18n.T("err.not_conflict_file"))
+	}
+	if err := ck.resolveConflict(rel, action); err != nil {
+		return err
+	}
+	m.SyncNow()
+	return nil
+}
+
+// conflicts implements conflictKeeper by scanning the local mirror.
+func (mm mirrorMode) conflicts() []Conflict {
+	root := mm.m.cfg.LocalDir()
 	var out []Conflict
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -77,11 +96,9 @@ func (m *Manager) Conflicts() []Conflict {
 	return out
 }
 
-// ResolveConflict resolves a single conflict file. action "keep" promotes the
-// file to its original name and removes the sibling conflict copies; action
-// "delete" just removes the copy. Either way a fresh sync is triggered so the
-// decision propagates to Drive.
-func (m *Manager) ResolveConflict(rel, action string) error {
+// resolveConflict implements conflictKeeper.
+func (mm mirrorMode) resolveConflict(rel, action string) error {
+	m := mm.m
 	root := m.cfg.LocalDir()
 	// Clean against "/" so any ".." cannot escape the local dir.
 	full := filepath.Join(root, filepath.Clean("/"+rel))
@@ -110,8 +127,6 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 	default:
 		return errors.New(i18n.T("err.unknown_action", action))
 	}
-
-	m.SyncNow()
 	return nil
 }
 

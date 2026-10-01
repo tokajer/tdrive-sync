@@ -74,12 +74,6 @@ func New(remote, conf, rcUser, rcPass string) (*Client, error) {
 	return &Client{bin: bin, conf: conf, remote: remote, rcUser: rcUser, rcPass: rcPass}, nil
 }
 
-// Bin returns the resolved rclone binary path.
-func (c *Client) Bin() string { return c.bin }
-
-// Conf returns the rclone config file path.
-func (c *Client) Conf() string { return c.conf }
-
 // Remote returns the remote spec ("name:").
 func (c *Client) Remote() string { return c.remote + ":" }
 

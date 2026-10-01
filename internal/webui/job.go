@@ -25,12 +25,12 @@ type job struct {
 	cancelFn context.CancelFunc
 }
 
-// start runs fn in the background under a context with the given timeout,
+// start runs fn in the background under parent with the given timeout,
 // unless a job is already running, in which case it does nothing and returns
 // false. Every line fn reports through logf is kept (capped to maxJobLines)
 // for snapshot to return.
-func (j *job) start(name string, timeout time.Duration, fn func(ctx context.Context, logf func(string, ...any)) error) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func (j *job) start(parent context.Context, name string, timeout time.Duration, fn func(ctx context.Context, logf func(string, ...any)) error) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	j.mu.Lock()
 	if j.name != "" {

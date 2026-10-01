@@ -38,18 +38,23 @@ func (r *trackingRunner) Run(ctx context.Context) {
 
 func (r *trackingRunner) SyncNow() {}
 
+// runnerFunc is a syncMode with nothing but a runner.
+type runnerFunc func() Runner
+
+func (f runnerFunc) newRunner() Runner { return f() }
+
 // withTrackingRunner swaps the stream-mode runner builder for one that counts
 // concurrently active instances, restoring the original on cleanup. Tests in
 // this package run sequentially (none opts into t.Parallel), so mutating the
-// package-level runners map for the duration of one test is safe.
+// package-level modes map for the duration of one test is safe.
 func withTrackingRunner(t *testing.T) (active, max *int32) {
 	t.Helper()
 	active, max = new(int32), new(int32)
-	orig := runners[config.ModeStream]
-	runners[config.ModeStream] = func(*Manager) Runner {
-		return &trackingRunner{active: active, max: max}
+	orig := modes[config.ModeStream]
+	modes[config.ModeStream] = func(*Manager) syncMode {
+		return runnerFunc(func() Runner { return &trackingRunner{active: active, max: max} })
 	}
-	t.Cleanup(func() { runners[config.ModeStream] = orig })
+	t.Cleanup(func() { modes[config.ModeStream] = orig })
 	return active, max
 }
 
@@ -110,15 +115,7 @@ func TestPauseBlocksStartUntilResume(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// newTestManager leaves m.rc nil (these tests never touch the rclone
-	// binary), so the production entry point - Start, which calls
-	// m.rc.RemoteExists() - cannot be used here. restart() needs no rclone
-	// client and starts a runner exactly the same way, so it doubles as
-	// "first start".
-	m.mu.Lock()
-	m.parent = ctx
-	m.mu.Unlock()
-	m.restart()
+	m.Start(ctx)
 	engine.runOnce(t, nil)
 
 	m.Pause()

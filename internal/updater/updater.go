@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"tdrive-sync/internal/app"
 	"tdrive-sync/internal/i18n"
 )
 
@@ -101,20 +102,27 @@ type Updater struct {
 	client   *http.Client
 	logf     func(string, ...any)
 
-	mu         sync.Mutex
-	status     Status
-	latest     *Release
-	includePre bool
-	applying   bool
+	// includePre reports whether prereleases are considered. It reads the
+	// setting where it is stored instead of keeping a copy that could drift.
+	includePre func() bool
+
+	mu       sync.Mutex
+	status   Status
+	latest   *Release
+	applying bool
 }
 
-// New creates an Updater for the given current version. includePre selects
-// whether prereleases are considered. logf may be nil.
-func New(current string, includePre bool, logf func(string, ...any)) *Updater {
+// New creates an Updater for the given current version. includePre is asked on
+// every check whether prereleases are considered; nil means never. logf may be
+// nil.
+func New(current string, includePre func() bool, logf func(string, ...any)) *Updater {
+	if includePre == nil {
+		includePre = func() bool { return false }
+	}
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	app := os.Getenv("APPIMAGE")
+	appImage := app.AppImage()
 	display := strings.TrimSpace(current)
 	if display == "" {
 		display = "local-dev-build"
@@ -125,7 +133,7 @@ func New(current string, includePre bool, logf func(string, ...any)) *Updater {
 		apiBase:    apiBase,
 		current:    normalize(current),
 		display:    display,
-		appImage:   app,
+		appImage:   appImage,
 		client:     &http.Client{Timeout: 30 * time.Second},
 		logf:       logf,
 		includePre: includePre,
@@ -133,11 +141,10 @@ func New(current string, includePre bool, logf func(string, ...any)) *Updater {
 	st := Status{
 		State:         StateIdle,
 		Current:       display,
-		IncludePre:    includePre,
-		CanSelfUpdate: app != "",
+		CanSelfUpdate: appImage != "",
 		Message:       i18n.T("update.not_checked"),
 	}
-	if app == "" {
+	if appImage == "" {
 		st.State = StateUnsupported
 		st.Message = i18n.T("update.appimage_only")
 	}
@@ -148,16 +155,10 @@ func New(current string, includePre bool, logf func(string, ...any)) *Updater {
 // Status returns the current snapshot.
 func (u *Updater) Status() Status {
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.status
-}
-
-// SetIncludePrerelease changes whether prereleases are considered.
-func (u *Updater) SetIncludePrerelease(on bool) {
-	u.mu.Lock()
-	u.includePre = on
-	u.status.IncludePre = on
+	st := u.status
 	u.mu.Unlock()
+	st.IncludePre = u.includePre()
+	return st
 }
 
 // Check queries GitHub and updates the status. It returns the applicable
@@ -171,10 +172,7 @@ func (u *Updater) Check(ctx context.Context) (*Release, error) {
 		return nil, err
 	}
 
-	u.mu.Lock()
-	includePre := u.includePre
-	u.mu.Unlock()
-	best := pick(rels, includePre)
+	best := pick(rels, u.includePre())
 
 	now := time.Now()
 	if best == nil || compareVersions(best.Version, u.current) <= 0 {

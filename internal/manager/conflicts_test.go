@@ -3,7 +3,13 @@
 
 package manager
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"tdrive-sync/internal/config"
+)
 
 func TestMarkerBase(t *testing.T) {
 	cases := map[string]string{
@@ -37,5 +43,40 @@ func TestConflictSide(t *testing.T) {
 		if got := conflictSide(in); got != want {
 			t.Errorf("conflictSide(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestConflictsOnlyInMirrorMode: stream mode has no conflict copies, and a
+// resolve request must not rename files on the live mount.
+func TestConflictsOnlyInMirrorMode(t *testing.T) {
+	m := newTestManager(t)
+	dir := m.cfg.LocalDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyName := "a.conflict1.txt"
+	if err := os.WriteFile(filepath.Join(dir, copyName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := m.Conflicts(); got != nil {
+		t.Errorf("stream mode listed conflicts: %v", got)
+	}
+	if err := m.ResolveConflict(copyName, "keep"); err == nil {
+		t.Error("stream mode resolved a conflict")
+	}
+
+	if err := m.cfg.SetMode(config.ModeMirror); err != nil {
+		t.Fatal(err)
+	}
+	got := m.Conflicts()
+	if len(got) != 1 || got[0].Path != copyName || got[0].Side != "cloud" {
+		t.Fatalf("mirror conflicts = %+v", got)
+	}
+	if err := m.ResolveConflict(copyName, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil {
+		t.Errorf("kept copy not promoted: %v", err)
 	}
 }

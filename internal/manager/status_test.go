@@ -6,6 +6,7 @@ package manager
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"tdrive-sync/internal/config"
 )
@@ -57,12 +58,15 @@ func TestSubscribeDeliversCurrent(t *testing.T) {
 
 	var got Status
 	m.Subscribe(func(s Status) { got = s })
+	m.status.Flush()
 	if got.State != StateIdle {
 		t.Errorf("a new observer got %q, want the current state %q", got.State, StateIdle)
 	}
 }
 
-// TestUpdateNotifiesObservers covers the path every status change takes.
+// TestUpdateNotifiesObservers covers the path every status change takes. A
+// slow observer may skip intermediate snapshots, but never sees them out of
+// order and always ends on the newest one.
 func TestUpdateNotifiesObservers(t *testing.T) {
 	m := newTestManager(t)
 
@@ -76,14 +80,72 @@ func TestUpdateNotifiesObservers(t *testing.T) {
 
 	m.status.SetState(StateStarting, "mounting")
 	m.status.SetState(StateIdle, "up to date")
+	m.status.Flush()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 3 { // the initial delivery plus two changes
-		t.Fatalf("observer saw %v, want three deliveries", seen)
+	if len(seen) == 0 || seen[len(seen)-1] != StateIdle {
+		t.Fatalf("observer saw %v, want it to end on idle", seen)
 	}
-	if seen[1] != StateStarting || seen[2] != StateIdle {
-		t.Errorf("observer saw %v, want [… starting idle]", seen)
+	order := map[State]int{"": 0, StateDisconnected: 0, StateStarting: 1, StateIdle: 2}
+	for i := 1; i < len(seen); i++ {
+		if order[seen[i]] < order[seen[i-1]] {
+			t.Fatalf("observer saw %v, out of order", seen)
+		}
+	}
+}
+
+// TestSlowObserverDoesNotBlockUpdates is why delivery is asynchronous: an
+// observer stuck on a disk or DBus call must not hold up the sync runners.
+func TestSlowObserverDoesNotBlockUpdates(t *testing.T) {
+	m := newTestManager(t)
+	release := make(chan struct{})
+	m.Subscribe(func(Status) { <-release })
+	defer close(release)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 10; i++ {
+			m.status.SetState(StateSyncing, "syncing")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("updates waited for a blocked observer")
+	}
+}
+
+// TestObserverMayReadStatus: an observer runs outside the store's lock, so it
+// can look at the status without deadlocking.
+func TestObserverMayReadStatus(t *testing.T) {
+	m := newTestManager(t)
+	m.Subscribe(func(Status) { _ = m.Status() })
+	m.status.SetState(StateIdle, "up to date")
+	m.status.Flush()
+}
+
+// TestCloseStopsDelivery: after Close nothing reaches an observer any more,
+// which is what lets Shutdown publish its final state last.
+func TestCloseStopsDelivery(t *testing.T) {
+	m := newTestManager(t)
+	var mu sync.Mutex
+	var last State
+	m.Subscribe(func(s Status) {
+		mu.Lock()
+		last = s.State
+		mu.Unlock()
+	})
+	m.status.SetState(StateIdle, "up to date")
+	m.status.Close()
+	m.status.SetState(StateError, "late")
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if last != StateIdle {
+		t.Fatalf("observer saw %q after Close, want idle", last)
 	}
 }
 
@@ -163,6 +225,7 @@ func TestConcurrentUpdatesDeliverFinalStateLast(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	m.status.Flush()
 
 	mu.Lock()
 	defer mu.Unlock()

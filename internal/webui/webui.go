@@ -23,6 +23,8 @@ import (
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/manager"
+	"tdrive-sync/internal/pins"
+	"tdrive-sync/internal/rclone"
 	"tdrive-sync/internal/updater"
 	"tdrive-sync/internal/window"
 )
@@ -35,17 +37,58 @@ var indexHTML []byte
 // paint instead of fetching its strings afterwards.
 const i18nMarker = "<!--I18N-->"
 
+// Backend is the sync side of the daemon, as the settings API drives it.
+// *manager.Manager implements it; the interface is what lets the handlers be
+// tested without rclone.
+type Backend interface {
+	Status() manager.Status
+	SetMode(mode config.SyncMode) error
+	SetConflictMode(mode config.ConflictMode) error
+	Conflicts() []manager.Conflict
+	ResolveConflict(rel, action string) error
+	SetLocalDir(path string) error
+	SyncNow()
+	Pause()
+	Resume()
+	Login(ctx context.Context, openerDir string, onLine func(string)) error
+	Logout(ctx context.Context) error
+	GoogleCreds() config.GoogleCreds
+	SetGoogleCreds(creds config.GoogleCreds) error
+	Browse(ctx context.Context, rel string) ([]rclone.Entry, error)
+	SetOffline(path string, on bool) error
+	ResetErrors()
+}
+
+// Updater is the self-update, as the settings API drives it. *updater.Updater
+// implements it.
+type Updater interface {
+	Status() updater.Status
+	Check(ctx context.Context) (*updater.Release, error)
+	Apply(ctx context.Context) error
+}
+
+// Previews is the keeper of Dolphin's per-folder preview markers.
+// *dolphin.Keeper implements it.
+type Previews interface {
+	Nudge()
+}
+
 // Server is the settings web server.
 type Server struct {
-	mgr      *manager.Manager
+	mgr      Backend
 	cfg      *config.Config
 	logs     *logbuf.Buffer
-	upd      *updater.Updater
-	previews *dolphin.Keeper
+	upd      Updater
+	previews Previews
 	restart  func()
 	addr     string
 	log      func(string, ...any)
 	index    []byte // index.html with the message catalog injected
+
+	// ctx is the daemon's lifetime, set by Serve. Work a handler starts in the
+	// background derives from it, so shutdown cancels it rather than leaving
+	// a half-downloaded update behind.
+	ctx context.Context
 
 	// login runs the OAuth flow; dolphin runs a plugin install/remove. Both are
 	// "start it, then poll for progress" jobs from the UI's point of view.
@@ -55,8 +98,9 @@ type Server struct {
 
 // New creates a settings server bound to 127.0.0.1 on the config's WebPort. upd,
 // previews and restart may be nil (the matching feature stays unavailable).
-func New(mgr *manager.Manager, cfg *config.Config, logs *logbuf.Buffer, upd *updater.Updater, previews *dolphin.Keeper, restart func()) *Server {
+func New(mgr Backend, cfg *config.Config, logs *logbuf.Buffer, upd Updater, previews Previews, restart func()) *Server {
 	return &Server{
+		ctx:      context.Background(),
 		mgr:      mgr,
 		cfg:      cfg,
 		logs:     logs,
@@ -116,18 +160,6 @@ func (s *Server) originAllowed(origin string) bool {
 	return origin == "http://"+s.addr || origin == fmt.Sprintf("http://localhost:%d", s.cfg.WebPort())
 }
 
-// Addr is the address the server listens on.
-func (s *Server) Addr() string { return s.addr }
-
-// ListenAndServe binds the settings port and serves until ctx is cancelled.
-func (s *Server) ListenAndServe(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
-	}
-	return s.Serve(ctx, ln)
-}
-
 // Serve runs the settings API on an already bound listener, blocking until ctx
 // is cancelled.
 //
@@ -135,6 +167,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // is what makes the instance unique, and a second launch has to find that out
 // before it mounts anything.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	s.ctx = ctx
 	srv := &http.Server{Handler: s.routes()}
 	go func() {
 		<-ctx.Done()
@@ -204,6 +237,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(s.index)
 }
 
+// decode reads a JSON request body into v, answering 400 itself when that
+// fails. Handlers return as soon as it reports false.
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
@@ -223,8 +266,7 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode string `json:"mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	mode, ok := config.ParseMode(body.Mode)
@@ -243,11 +285,15 @@ func (s *Server) handleConflictMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode string `json:"mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
-	if err := s.mgr.SetConflictMode(body.Mode); err != nil {
+	mode, ok := config.ParseConflictMode(body.Mode)
+	if !ok {
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetConflictMode(mode); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -278,8 +324,7 @@ func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		On bool `json:"on"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	if err := s.cfg.SetAutostartEnabled(body.On); err != nil {
@@ -329,7 +374,7 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	started := s.login.start("login", 5*time.Minute, func(ctx context.Context, logf func(string, ...any)) error {
+	started := s.login.start(s.ctx, "login", 5*time.Minute, func(ctx context.Context, logf func(string, ...any)) error {
 		dir, err := window.InstallOpenShim()
 		if err != nil {
 			s.log("browser shim unavailable, letting rclone open the sign-in link: %v", err)
@@ -374,8 +419,7 @@ func (s *Server) handleGoogleCredsSave(w http.ResponseWriter, r *http.Request) {
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	id := strings.TrimSpace(body.ClientID)
@@ -397,8 +441,7 @@ func (s *Server) handleGoogleCredsImport(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Data string `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	creds, err := config.ParseGoogleCredsJSON([]byte(body.Data))
@@ -414,7 +457,7 @@ func (s *Server) handleGoogleCredsImport(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 	if err := s.mgr.Logout(ctx); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -432,7 +475,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	pins := s.cfg.OfflinePaths()
+	pinned := s.cfg.OfflinePaths()
 	type item struct {
 		Name  string `json:"name"`
 		Path  string `json:"path"`
@@ -450,14 +493,14 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if rel != "" {
 			full = rel + "/" + e.Path
 		}
-		offline := config.IsOfflinePath(pins, full)
+		offline := pins.Has(pinned, full)
 		items = append(items, item{
 			Name:      e.Name,
 			Path:      full,
 			IsDir:     e.IsDir,
 			Size:      e.Size,
 			Offline:   offline,
-			Inherited: offline && !slices.Contains(pins, full),
+			Inherited: offline && !slices.Contains(pinned, full),
 		})
 	}
 	writeJSON(w, map[string]any{"path": rel, "entries": items})
@@ -522,8 +565,7 @@ func (s *Server) handleDolphinPreviewsDefault(w http.ResponseWriter, r *http.Req
 	var body struct {
 		Disabled bool `json:"disabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	if err := dolphin.SetPreviewsDefault(body.Disabled); err != nil {
@@ -541,8 +583,7 @@ func (s *Server) handleDolphinPreviews(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Disabled bool `json:"disabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	syncDir := s.cfg.LocalDir()
@@ -584,7 +625,7 @@ const dolphinJobTimeout = 30 * time.Minute
 // runDolphinJob runs fn in the background – unless one is already running –
 // collecting its output for /api/dolphin to hand to the page.
 func (s *Server) runDolphinJob(name string, fn func(context.Context, func(string, ...any)) error) {
-	s.dolphin.start(name, dolphinJobTimeout, func(ctx context.Context, logf func(string, ...any)) error {
+	s.dolphin.start(s.ctx, name, dolphinJobTimeout, func(ctx context.Context, logf func(string, ...any)) error {
 		err := fn(ctx, func(format string, args ...any) {
 			logf(format, args...)
 			s.log("[dolphin] %s", fmt.Sprintf(format, args...))
@@ -671,7 +712,7 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	// Download + replace can take a while; run in the background and let the UI
 	// poll /api/update for progress and the final state.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Minute)
 		defer cancel()
 		_ = s.upd.Apply(ctx)
 	}()
@@ -682,19 +723,18 @@ func (s *Server) handleUpdatePrerelease(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		On bool `json:"on"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
 	if err := s.cfg.SetUpdatePrerelease(body.On); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The updater reads the setting from the configuration; re-check so the UI
+	// reflects the new selection immediately.
 	if s.upd != nil {
-		s.upd.SetIncludePrerelease(body.On)
-		// Re-check so the UI reflects the new selection immediately.
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 			defer cancel()
 			_, _ = s.upd.Check(ctx)
 		}()

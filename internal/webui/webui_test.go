@@ -5,6 +5,7 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,6 +22,7 @@ func testServer() *Server {
 	return &Server{
 		cfg:  cfg,
 		addr: fmt.Sprintf("127.0.0.1:%d", cfg.WebPort()),
+		ctx:  context.Background(),
 	}
 }
 

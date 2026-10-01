@@ -44,6 +44,7 @@ func newTestManager(t *testing.T) *Manager {
 		cfg:      cfg,
 		cacheDir: cacheDir,
 		cache:    fmstate.Cache{Dir: cacheDir, Remote: cfg.RemoteName()},
+		account:  &fakeAccount{remote: true},
 		notifier: notify.Noop{},
 		log:      nopLogger{},
 		fmPub:    pub,
@@ -132,6 +133,51 @@ func (c *fakeControl) CoreStats(context.Context) (rclone.Stats, error) {
 	return c.stats, nil
 }
 
+// fakeAccount stands in for the stored rclone remote.
+type fakeAccount struct {
+	mu        sync.Mutex
+	remote    bool  // a remote is stored
+	loginErr  error // what Login returns
+	logoutErr error // what Logout returns
+	email     string
+	logins    int
+	logouts   int
+}
+
+func (a *fakeAccount) Login(context.Context, rclone.LoginOptions, func(string)) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.logins++
+	if a.loginErr != nil {
+		return a.loginErr
+	}
+	a.remote = true
+	return nil
+}
+
+func (a *fakeAccount) Logout(context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.logouts++
+	a.remote = false
+	return a.logoutErr
+}
+
+func (a *fakeAccount) RemoteExists() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.remote
+}
+
+func (a *fakeAccount) UserEmail(context.Context) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.email
+}
+
+func (a *fakeAccount) List(context.Context, string) ([]rclone.Entry, error) { return nil, nil }
+func (a *fakeAccount) ListDirs(context.Context, string) ([]string, error)   { return nil, nil }
+
 // testTimeout bounds every wait in these tests, so a broken runner fails the
 // test instead of hanging the suite.
 const testTimeout = 5 * time.Second
@@ -148,4 +194,12 @@ func waitForState(t *testing.T, m *Manager, want State) Status {
 	}
 	t.Fatalf("status never reached %q (stuck at %q: %s)", want, m.Status().State, m.Status().Message)
 	return Status{}
+}
+
+// TestFileManagerModeMatchesConfig: fmstate spells the mirror mode out instead
+// of importing config; the two must stay the same string.
+func TestFileManagerModeMatchesConfig(t *testing.T) {
+	if string(config.ModeMirror) != fmstate.ModeMirror {
+		t.Fatalf("config.ModeMirror = %q, fmstate.ModeMirror = %q", config.ModeMirror, fmstate.ModeMirror)
+	}
 }

@@ -8,7 +8,8 @@ description: Orientation for the TDrive Sync codebase (Google Drive client for L
 Google Drive client for Linux, modelled on Google's Windows Drive client. A Go
 daemon drives a **bundled rclone binary as a child process** — `rclone mount`
 (stream mode, files on demand) or `rclone bisync` (mirror mode, full local copy).
-Ships as one AppImage. No cgo: GTK via `dlopen`, tray via DBus.
+Ships as one AppImage. GTK is `dlopen`ed at runtime (cgo, but no link-time GTK
+dependency - a `CGO_ENABLED=0` build loses the window), tray via DBus.
 
 **First command of any session:**
 
@@ -29,13 +30,16 @@ Deeper walkthrough: **[REENTRY.md](../../../REENTRY.md)**. Open work:
 | Package | Responsibility |
 |---|---|
 | `cmd/tdrive-sync` | subcommand dispatch, daemon wiring, CLI commands |
+| `internal/app` | app name, desktop id, `Exec()` (AppImage path first) |
 | `internal/xdg` | the freedesktop base directories, resolved once for everyone |
+| `internal/fsutil` | `WriteAtomic` - use it for every file another program reads |
+| `internal/pins` | offline-pin rules (`Has`, `Add`, `Remove`); the C++ plugin mirrors `Has` |
 | `internal/config` | YAML config, offline-pin list. Fields are unexported: accessors lock, setters persist in the same critical section |
 | `internal/rclone` | binary lookup, OAuth login, mount/bisync arguments, RC client, `lsjson` |
-| `internal/manager` | the controller: status store, mode start/stop, pinning, warming, conflicts, login. Modes are `Runner`s (`stream.go`, `mirror.go`) behind a registry; timings in `tuning.go` |
+| `internal/manager` | the controller: status store, mode start/stop, pinning, warming, conflicts, login. Modes are `syncMode`s (`streamMode`, `mirrorMode`) in the `modes` registry: each builds its `Runner` and offers optional features (`pinner`, `conflictKeeper`). rclone sits behind `Engine`/`Control`/`Account`, so tests need no binary. Status observers run asynchronously (newest snapshot wins); tests call `status.Flush()`. Timings in `tuning.go` |
 | `internal/fmstate` | per-file state for file managers: published snapshot, VFS cache inspection, cache eviction |
 | `internal/dolphin` | KDE integration: embedded C++ KIO plugin sources, installer, preview-marker keeper |
-| `internal/webui` | loopback HTTP API + embedded single-page frontend (`index.html`) |
+| `internal/webui` | loopback HTTP API + embedded single-page frontend (`index.html`); depends on the `Backend` interface, handler tests in `handlers_test.go` |
 | `internal/window` | WebKitGTK window via dlopen, desktop entry, autostart, URL opening |
 | `internal/tray` | tray icon over DBus StatusNotifierItem |
 | `internal/i18n` | German/English catalogs; keep `catalog_de.go` and `catalog_en.go` in sync |

@@ -22,7 +22,9 @@ import (
 	"strings"
 	"sync"
 
-	"tdrive-sync/internal/config"
+	"tdrive-sync/internal/fsutil"
+	"tdrive-sync/internal/pins"
+	"tdrive-sync/internal/xdg"
 )
 
 // Version is the format version of the published file. The plugin refuses
@@ -52,6 +54,11 @@ const (
 	// Local means mirror mode: everything is a real local copy anyway.
 	Local State = "local"
 )
+
+// ModeMirror is the value of Info.Mode in mirror mode. It is config.ModeMirror
+// on the wire; spelled out here so this package, the plugin contract, depends
+// on nothing but the rules it applies.
+const ModeMirror = "mirror"
 
 // Info is the snapshot handed to the file-manager integration. Its JSON form is
 // the wire format the C++ plugin parses, so field names are part of the
@@ -84,7 +91,7 @@ func (i Info) Cache() Cache { return Cache{Dir: i.CacheDir, Remote: i.Remote} }
 
 // Path returns the default location of the published file.
 func Path() (string, error) {
-	dir, err := config.StateDir()
+	dir, err := xdg.StateDir()
 	if err != nil {
 		return "", err
 	}
@@ -135,20 +142,7 @@ func (p *Publisher) Publish(i Info) error {
 	if string(raw) == string(p.last) {
 		return nil
 	}
-	if p.path == "" {
-		// Zero value: resolve the default location on first use, so a Publisher
-		// can be used without a constructor.
-		path, err := Path()
-		if err != nil {
-			return err
-		}
-		p.path = path
-	}
-	tmp := p.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, p.path); err != nil {
+	if err := fsutil.WriteAtomic(p.path, raw, 0o644); err != nil {
 		return err
 	}
 	p.last = raw
@@ -191,10 +185,10 @@ func (i Info) Rel(abs string) (string, bool) {
 }
 
 // IsPinned reports whether rel is marked "keep offline". Delegates to
-// config.IsOfflinePath so a pin written by an older version ("/Docs/") is
-// normalised exactly as it is in the daemon.
+// pins.Has so a pin written by an older version ("/Docs/") is normalised
+// exactly as it is in the daemon.
 func (i Info) IsPinned(rel string) bool {
-	return config.IsOfflinePath(i.Pinned, rel)
+	return pins.Has(i.Pinned, rel)
 }
 
 // Resolve returns the state of an absolute local path.
@@ -219,7 +213,7 @@ func (i Info) ResolveRel(rel string, isDir bool) State {
 	if rel == "" {
 		return Unknown
 	}
-	if i.Mode == string(config.ModeMirror) {
+	if i.Mode == ModeMirror {
 		return Local
 	}
 	cache := i.Cache()

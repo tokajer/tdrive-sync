@@ -105,15 +105,18 @@ running on this machine, which is usually the context you need.
 | Package | Responsibility |
 |---|---|
 | `cmd/tdrive-sync` | entry point; subcommand dispatch, daemon wiring, CLI commands |
+| `internal/app` | the app's name, desktop id and the command that starts it again (AppImage path first) |
 | `internal/xdg` | the freedesktop base directories, resolved in one place |
+| `internal/fsutil` | atomic file replacement - every file another program reads goes through it |
+| `internal/pins` | the "keep offline" pin rules, shared by config, fmstate and the web UI (the C++ plugin mirrors `Has`) |
 | `internal/config` | YAML config load/save, offline-pin list; fields live behind accessors that lock and persist |
 | `internal/rclone` | locate the binary, OAuth login, build mount/bisync arguments, RC client, `lsjson` listing |
-| `internal/manager` | the controller: status store, mode start/stop, pinning, warming, conflicts, login. Each mode is a `Runner` (`stream.go`, `mirror.go`) reached through a registry, so the controller never switches on the mode |
-| `internal/fmstate` | per-file state for file managers: published snapshot, VFS cache inspection, cache eviction |
+| `internal/manager` | the controller: status store, mode start/stop, pinning, warming, conflicts, login. Each mode is a `syncMode` (`streamMode`, `mirrorMode`) in a registry; it builds the `Runner` and offers optional features (`pinner`, `conflictKeeper`) the controller asks for instead of switching on the mode. rclone sits behind `Engine`, `Control` and `Account`. Status observers each run on their own goroutine and get the newest snapshot, so a slow disk or DBus never holds up a runner |
+| `internal/fmstate` | per-file state for file managers: published snapshot, VFS cache inspection, cache eviction. The plugin contract, so it depends on nothing but `pins`, `xdg`, `fsutil` |
 | `internal/dolphin` | KDE integration: embedded KIO plugin sources (C++), the installer, and the preview-marker keeper |
-| `internal/webui` | loopback HTTP server, JSON API, embedded single-page frontend |
+| `internal/webui` | loopback HTTP server, JSON API, embedded single-page frontend. Talks to the sync side through its `Backend` interface; handler tests run on fakes |
 | `internal/window` | native window via WebKitGTK (dlopen, no dev headers), desktop entry, autostart, URL opening |
-| `internal/tray` | tray icon over DBus StatusNotifierItem (no GTK, no cgo) |
+| `internal/tray` | tray icon over DBus StatusNotifierItem (no GTK) |
 | `internal/notify` | desktop notifications over DBus |
 | `internal/i18n` | German/English message catalogs plus locale detection |
 | `internal/updater` | self-update from GitHub releases |
@@ -231,8 +234,10 @@ you touch.
 - Comments and identifiers are English; user-visible strings go through
   `internal/i18n` (`catalog_de.go` / `catalog_en.go` – keep the keys in sync; a
   missing German key falls back to English).
-- No cgo. GTK is reached via `dlopen`, the tray via DBus, so the AppImage stays
-  portable.
+- No link-time GTK dependency. The settings window uses cgo only to `dlopen`
+  WebKitGTK at runtime (`internal/window/window_gtk.go`; the build sets
+  `CGO_ENABLED=1`), and the tray talks DBus, so the AppImage stays portable. A
+  `CGO_ENABLED=0` build still works but silently loses the window.
 - Everything that can fail on an exotic desktop is best-effort: the daemon keeps
   running without a tray host, without WebKitGTK, without a browser.
 - Comments explain *why*, not *what*. Match the density of the surrounding code.

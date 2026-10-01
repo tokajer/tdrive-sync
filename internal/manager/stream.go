@@ -67,7 +67,7 @@ func (r *streamRunner) Run(ctx context.Context) {
 	// below so Run never returns while either is still running.
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); m.pollStats(ctx) }()
+	go func() { defer wg.Done(); r.pollStats(ctx) }()
 	go func() { defer wg.Done(); r.warmLoop(ctx) }()
 	defer wg.Wait()
 
@@ -83,7 +83,7 @@ func (r *streamRunner) Run(ctx context.Context) {
 			continue
 		}
 
-		if m.waitMountReady(ctx, r.readyTimeout) {
+		if r.waitMountReady(ctx) {
 			m.setState(StateIdle, i18n.T("status.up_to_date"))
 			if !firstReady {
 				m.notifier.Notify(i18n.T("notify.drive_ready", mp))
@@ -141,12 +141,13 @@ func (r *streamRunner) warmLoop(ctx context.Context) {
 func (r *streamRunner) warmNow(ctx context.Context) {
 	wctx, cancel := context.WithTimeout(ctx, warmTimeout)
 	defer cancel()
-	r.m.warmOffline(wctx)
+	streamMode{r.m}.warmOffline(wctx)
 }
 
 // waitMountReady polls the mount's control server until it answers or timeout.
-func (m *Manager) waitMountReady(ctx context.Context, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
+func (r *streamRunner) waitMountReady(ctx context.Context) bool {
+	m := r.m
+	deadline := time.Now().Add(r.readyTimeout)
 	for time.Now().Before(deadline) {
 		cctx, cancel := context.WithTimeout(ctx, rcCallTimeout)
 		ok := m.ctl.Ping(cctx)
@@ -162,7 +163,8 @@ func (m *Manager) waitMountReady(ctx context.Context, timeout time.Duration) boo
 }
 
 // pollStats mirrors the mount's transfer statistics into the status.
-func (m *Manager) pollStats(ctx context.Context) {
+func (r *streamRunner) pollStats(ctx context.Context) {
+	m := r.m
 	t := time.NewTicker(statsInterval)
 	defer t.Stop()
 	var lastReported string

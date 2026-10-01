@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"tdrive-sync/internal/app"
 	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/manager"
@@ -250,7 +251,7 @@ func cliLogin() {
 func openWindowCmd() {
 	cfg := loadOrExit()
 	url := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort())
-	if err := window.Open(appName, url); err != nil {
+	if err := window.Open(app.Name, url); err != nil {
 		log.Printf("could not open the window: %v", err)
 		os.Exit(1)
 	}

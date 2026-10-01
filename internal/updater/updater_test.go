@@ -86,7 +86,7 @@ func TestCheckAndApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u := New("0.1.0", false, nil)
+	u := New("0.1.0", nil, nil)
 	u.apiBase = srv.URL
 	u.appImage = target
 	u.client = srv.Client()
@@ -137,7 +137,7 @@ func TestCheckUpToDate(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	u := New("0.1.0", false, nil)
+	u := New("0.1.0", nil, nil)
 	u.apiBase = srv.URL
 	u.appImage = "/tmp/whatever"
 	u.client = srv.Client()
@@ -200,12 +200,26 @@ func TestPickWithMixedPrereleaseDepth(t *testing.T) {
 // build both refuse a second start, apply did not, so two clicks meant two
 // downloads renaming onto the same running AppImage.
 func TestApplyRejectsSecondRun(t *testing.T) {
-	u := New("1.0.0", false, nil)
+	u := New("1.0.0", nil, nil)
 	u.appImage = filepath.Join(t.TempDir(), "app.AppImage")
 	u.latest = &Release{Version: "2.0.0", Tag: "v2.0.0"}
 	u.applying = true
 
 	if err := u.Apply(context.Background()); err == nil {
 		t.Fatal("a second apply must be refused while one is running")
+	}
+}
+
+// TestIncludePrereleaseFollowsSource: the updater keeps no copy of the setting,
+// so a change where it is stored shows at once.
+func TestIncludePrereleaseFollowsSource(t *testing.T) {
+	on := false
+	u := New("1.0.0", func() bool { return on }, nil)
+	if u.Status().IncludePre {
+		t.Fatal("IncludePre set although the source says off")
+	}
+	on = true
+	if !u.Status().IncludePre {
+		t.Fatal("IncludePre did not follow the source")
 	}
 }

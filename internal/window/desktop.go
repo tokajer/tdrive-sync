@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"tdrive-sync/internal/app"
+	"tdrive-sync/internal/fsutil"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/xdg"
 )
@@ -41,11 +43,11 @@ func InstallDesktopEntry() error {
 	if err := os.MkdirAll(iconDir, 0o755); err != nil {
 		return err
 	}
-	if err := writeIfChanged(filepath.Join(iconDir, "tdrive-sync.svg"), iconSVG); err != nil {
+	if err := fsutil.WriteAtomicIfChanged(filepath.Join(iconDir, "tdrive-sync.svg"), iconSVG, 0o644); err != nil {
 		return err
 	}
 
-	exec := appExecPath()
+	exec := app.Exec()
 
 	appDir := filepath.Join(data, "applications")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -55,7 +57,7 @@ func InstallDesktopEntry() error {
 	// compositor to match them; StartupWMClass covers X11 as well.
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
-		"Name=TDrive Sync\n" +
+		"Name=" + app.Name + "\n" +
 		localized("GenericName", "desktop.generic_name") +
 		localized("Comment", "desktop.comment") +
 		"Exec=\"" + exec + "\"\n" +
@@ -65,7 +67,7 @@ func InstallDesktopEntry() error {
 		"Keywords=google;drive;sync;cloud;backup;\n" +
 		"StartupNotify=false\n" +
 		"StartupWMClass=tdrive-sync\n"
-	return writeIfChanged(filepath.Join(appDir, "tdrive-sync.desktop"), []byte(entry))
+	return fsutil.WriteAtomicIfChanged(filepath.Join(appDir, "tdrive-sync.desktop"), []byte(entry), 0o644)
 }
 
 // InstallAutostart registers (or removes) an XDG autostart entry so the daemon
@@ -91,9 +93,9 @@ func InstallAutostart(enabled bool) error {
 	}
 	entry := "[Desktop Entry]\n" +
 		"Type=Application\n" +
-		"Name=TDrive Sync\n" +
+		"Name=" + app.Name + "\n" +
 		localized("Comment", "desktop.autostart_comment") +
-		"Exec=\"" + appExecPath() + "\" run\n" +
+		"Exec=\"" + app.Exec() + "\" run\n" +
 		"Icon=tdrive-sync\n" +
 		"Terminal=false\n" +
 		"Categories=Network;FileTransfer;\n" +
@@ -101,27 +103,5 @@ func InstallAutostart(enabled bool) error {
 		"StartupWMClass=tdrive-sync\n" +
 		"X-GNOME-Autostart-enabled=true\n" +
 		"X-GNOME-Autostart-Delay=5\n"
-	return writeIfChanged(path, []byte(entry))
-}
-
-// appExecPath returns the command used to launch the app. It prefers the outer
-// AppImage path (stable across runs) over the executable, which for an AppImage
-// points into a temporary mount that vanishes on exit.
-func appExecPath() string {
-	if p := os.Getenv("APPIMAGE"); p != "" {
-		return p
-	}
-	if e, err := os.Executable(); err == nil {
-		return e
-	}
-	return "tdrive-sync"
-}
-
-// writeIfChanged writes data to path only when it differs from the current
-// contents, so repeated daemon starts do not churn the files.
-func writeIfChanged(path string, data []byte) error {
-	if old, err := os.ReadFile(path); err == nil && string(old) == string(data) {
-		return nil
-	}
-	return os.WriteFile(path, data, 0o644)
+	return fsutil.WriteAtomicIfChanged(path, []byte(entry), 0o644)
 }

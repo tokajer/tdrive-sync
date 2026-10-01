@@ -21,7 +21,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"tdrive-sync/internal/fsutil"
 	"tdrive-sync/internal/i18n"
+	"tdrive-sync/internal/pins"
 	"tdrive-sync/internal/xdg"
 )
 
@@ -50,16 +52,28 @@ func ParseMode(s string) (SyncMode, bool) {
 	return "", false
 }
 
-// Conflict resolution strategies for mirror mode.
+// ConflictMode selects how mirror mode resolves sync conflicts.
+type ConflictMode string
+
 const (
 	// ConflictAuto resolves conflicts automatically: the newest file wins, the
 	// cloud wins when the two sides cannot be reconciled, and the losing copy is
 	// kept as a dated backup.
-	ConflictAuto = "auto"
+	ConflictAuto ConflictMode = "auto"
 	// ConflictManual keeps both versions of a conflicting file so the user can
 	// decide in the UI which one wins.
-	ConflictManual = "manual"
+	ConflictManual ConflictMode = "manual"
 )
+
+// ParseConflictMode maps a string to a conflict mode, reporting whether it
+// names one.
+func ParseConflictMode(s string) (ConflictMode, bool) {
+	switch m := ConflictMode(s); m {
+	case ConflictAuto, ConflictManual:
+		return m, true
+	}
+	return "", false
+}
 
 // GoogleCreds holds an optional custom OAuth client. When both fields are
 // empty rclone's built-in Drive credentials are used. Filling these in is the
@@ -121,7 +135,7 @@ type data struct {
 	MirrorIntervalSec int `yaml:"mirror_interval_sec"`
 	// ConflictMode is how mirror-mode sync conflicts are handled
 	// ("auto" or "manual"). Empty is treated as "auto".
-	ConflictMode string `yaml:"conflict_mode"`
+	ConflictMode ConflictMode `yaml:"conflict_mode"`
 	// AutostartDisabled turns off the "start on login" autostart entry when set.
 	AutostartDisabled bool `yaml:"autostart_disabled"`
 	// UpdatePrerelease includes prereleases when checking for updates.
@@ -190,7 +204,7 @@ func Load() (*Config, error) {
 	if cfg.d.RemoteName == "" {
 		cfg.d.RemoteName = "gdrive"
 	}
-	if cfg.d.ConflictMode == "" {
+	if _, ok := ParseConflictMode(string(cfg.d.ConflictMode)); !ok {
 		cfg.d.ConflictMode = ConflictManual
 	}
 	if _, ok := ParseMode(string(cfg.d.Mode)); !ok {
@@ -198,7 +212,7 @@ func Load() (*Config, error) {
 	}
 	// Normalise pins written by an older version or edited by hand, so the
 	// indicator's prefix matching and our own agree on what is pinned.
-	cfg.d.OfflinePaths = normalizeOffline(cfg.d.OfflinePaths)
+	cfg.d.OfflinePaths = pins.Normalize(cfg.d.OfflinePaths)
 	return cfg, nil
 }
 
@@ -222,7 +236,9 @@ func (c *Config) MirrorIntervalSec() int {
 }
 
 // ConflictMode returns how mirror-mode conflicts are handled.
-func (c *Config) ConflictMode() string { return get(c, func(d *data) string { return d.ConflictMode }) }
+func (c *Config) ConflictMode() ConflictMode {
+	return get(c, func(d *data) ConflictMode { return d.ConflictMode })
+}
 
 // AutostartEnabled reports whether the app should start on login.
 func (c *Config) AutostartEnabled() bool {
@@ -258,7 +274,7 @@ func (c *Config) OfflinePaths() []string {
 // IsOffline reports whether a Drive-relative path is kept offline, either by its
 // own pin or through a pinned parent folder.
 func (c *Config) IsOffline(p string) bool {
-	return get(c, func(d *data) bool { return IsOfflinePath(d.OfflinePaths, p) })
+	return get(c, func(d *data) bool { return pins.Has(d.OfflinePaths, p) })
 }
 
 // get reads one value under the lock. A generic helper keeps every accessor a
@@ -298,11 +314,11 @@ func (c *Config) SetLocalDir(p string) error {
 	return c.set(func(d *data) { d.LocalDir = filepath.Clean(p) })
 }
 
-// SetConflictMode switches how mirror-mode conflicts are resolved. Anything but
-// ConflictManual means automatic resolution.
-func (c *Config) SetConflictMode(mode string) error {
-	if mode != ConflictManual {
-		mode = ConflictAuto
+// SetConflictMode switches how mirror-mode conflicts are resolved. An unknown
+// mode is rejected.
+func (c *Config) SetConflictMode(mode ConflictMode) error {
+	if _, ok := ParseConflictMode(string(mode)); !ok {
+		return fmt.Errorf("unknown conflict mode %q", mode)
 	}
 	return c.set(func(d *data) { d.ConflictMode = mode })
 }
@@ -322,25 +338,19 @@ func (c *Config) SetGoogle(creds GoogleCreds) error {
 	return c.set(func(d *data) { d.Google = creds })
 }
 
-// SetOffline pins a Drive-relative path for offline use, or releases it.
-//
-// Pins are hierarchical: pinning a folder pins everything below it, so a path
-// already covered by a pinned ancestor is not added again, and pins below the
-// new one are dropped. Leaving them would make a later release of the folder
-// ineffective - the leftover pin pulls its file straight back into the cache.
-// Releasing drops the pin together with every pin below it, so releasing a
-// folder really releases its contents.
+// SetOffline pins a Drive-relative path for offline use, or releases it. Pins
+// are hierarchical; see package pins for the rules.
 func (c *Config) SetOffline(p string, on bool) error {
-	p = cleanOfflinePath(p)
+	p = pins.Clean(p)
 	if p == "" {
 		return errors.New(i18n.T("err.invalid_path"))
 	}
 	return c.set(func(d *data) {
 		if on {
-			d.OfflinePaths = addOffline(d.OfflinePaths, p)
+			d.OfflinePaths = pins.Add(d.OfflinePaths, p)
 			return
 		}
-		d.OfflinePaths = removeOffline(d.OfflinePaths, p)
+		d.OfflinePaths = pins.Remove(d.OfflinePaths, p)
 	})
 }
 
@@ -349,14 +359,6 @@ func (c *Config) set(fn func(*data)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fn(&c.d)
-	return c.saveLocked()
-}
-
-// Save writes the config to disk. Setters do this themselves; this is for the
-// rare caller that needs to force a write.
-func (c *Config) Save() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.saveLocked()
 }
 
@@ -373,88 +375,7 @@ func (c *Config) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.path)
-}
-
-// -------- offline-pin rules (pure, so they are testable on their own) --------
-
-// addOffline returns paths with p pinned, dropping pins it now covers.
-func addOffline(paths []string, p string) []string {
-	if IsOfflinePath(paths, p) {
-		return paths
-	}
-	out := paths[:0]
-	for _, e := range paths {
-		if !covers(p, e) {
-			out = append(out, e)
-		}
-	}
-	return append(out, p)
-}
-
-// removeOffline returns paths without p and without any pin below it.
-func removeOffline(paths []string, p string) []string {
-	out := paths[:0]
-	for _, e := range paths {
-		if cleanOfflinePath(e) != p && !covers(p, e) {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-// IsOfflinePath reports whether p is pinned directly or through a parent
-// folder in pins. Exported so fmstate.Info.IsPinned (the C++ plugin's Go
-// counterpart) can share this exact rule instead of carrying its own copy.
-func IsOfflinePath(pins []string, p string) bool {
-	p = cleanOfflinePath(p)
-	if p == "" {
-		return false
-	}
-	for _, e := range pins {
-		if e = cleanOfflinePath(e); e == p || covers(e, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// normalizeOffline cleans every pin and drops empty and duplicate entries.
-func normalizeOffline(paths []string) []string {
-	out := make([]string, 0, len(paths))
-	seen := map[string]bool{}
-	for _, e := range paths {
-		e = cleanOfflinePath(e)
-		if e == "" || seen[e] {
-			continue
-		}
-		seen[e] = true
-		out = append(out, e)
-	}
-	return out
-}
-
-// covers reports whether the pinned path parent contains child.
-func covers(parent, child string) bool {
-	parent, child = cleanOfflinePath(parent), cleanOfflinePath(child)
-	if parent == "" || child == "" {
-		return false
-	}
-	return strings.HasPrefix(child, parent+"/")
-}
-
-// cleanOfflinePath normalises a Drive-relative path so pins compare reliably:
-// "Docs", "Docs/" and "/Docs" all name the same folder.
-func cleanOfflinePath(p string) string {
-	p = strings.Trim(strings.TrimSpace(p), "/")
-	if p == "." {
-		return ""
-	}
-	return p
+	return fsutil.WriteAtomic(c.path, raw, 0o600)
 }
 
 // -------- derived paths --------
