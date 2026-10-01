@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func cache(t *testing.T) Info {
 // with the first filled bytes written, plus rclone's metadata.
 func writeCached(t *testing.T, i Info, rel string, size, filled int64, dirty bool, ranges []cachedRange) {
 	t.Helper()
-	data := i.DataPath(rel)
+	data := i.Cache().DataPath(rel)
 	if err := os.MkdirAll(filepath.Dir(data), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func writeCached(t *testing.T, i Info, rel string, size, filled int64, dirty boo
 		t.Fatal(err)
 	}
 
-	meta := i.MetaPath(rel)
+	meta := i.Cache().MetaPath(rel)
 	if err := os.MkdirAll(filepath.Dir(meta), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestResolveRelStates(t *testing.T) {
 	t.Run("folders without cached data are cloud-only", func(t *testing.T) {
 		i := cache(t)
 
-		if err := os.MkdirAll(i.DataPath("emptied/deep"), 0o755); err != nil {
+		if err := os.MkdirAll(i.Cache().DataPath("emptied/deep"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if got := i.ResolveRel("emptied", true); got != Cloud {
@@ -274,7 +275,7 @@ func TestEvict(t *testing.T) {
 		writeCached(t, i, "dir/a.bin", size, size, false, nil)
 		writeCached(t, i, "dir/b.bin", size, 4096, false, nil)
 
-		freed, kept, err := i.Evict("dir")
+		freed, kept, err := i.Cache().Evict("dir")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,10 +285,10 @@ func TestEvict(t *testing.T) {
 		if freed < size {
 			t.Errorf("freed %d bytes, want at least %d", freed, size)
 		}
-		if _, err := os.Stat(i.DataPath("dir")); !os.IsNotExist(err) {
+		if _, err := os.Stat(i.Cache().DataPath("dir")); !os.IsNotExist(err) {
 			t.Errorf("cache data still present: %v", err)
 		}
-		if _, err := os.Stat(i.MetaPath("dir")); !os.IsNotExist(err) {
+		if _, err := os.Stat(i.Cache().MetaPath("dir")); !os.IsNotExist(err) {
 			t.Errorf("cache metadata still present: %v", err)
 		}
 		if got := i.ResolveRel("dir/a.bin", false); got != Cloud {
@@ -300,7 +301,7 @@ func TestEvict(t *testing.T) {
 		writeCached(t, i, "dir/clean.bin", size, size, false, nil)
 		writeCached(t, i, "dir/unsent.bin", size, size, true, nil)
 
-		freed, kept, err := i.Evict("dir")
+		freed, kept, err := i.Cache().Evict("dir")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -310,10 +311,10 @@ func TestEvict(t *testing.T) {
 		if freed < size || freed >= 2*size {
 			t.Errorf("freed %d bytes, want about %d", freed, size)
 		}
-		if _, err := os.Stat(i.DataPath("dir/unsent.bin")); err != nil {
+		if _, err := os.Stat(i.Cache().DataPath("dir/unsent.bin")); err != nil {
 			t.Errorf("the file with unsent changes was deleted: %v", err)
 		}
-		if _, err := os.Stat(i.DataPath("dir/clean.bin")); !os.IsNotExist(err) {
+		if _, err := os.Stat(i.Cache().DataPath("dir/clean.bin")); !os.IsNotExist(err) {
 			t.Errorf("the clean file survived: %v", err)
 		}
 	})
@@ -321,14 +322,14 @@ func TestEvict(t *testing.T) {
 	t.Run("keeps a single file with unsent changes", func(t *testing.T) {
 		i := cache(t)
 		writeCached(t, i, "unsent.bin", size, size, true, nil)
-		freed, kept, err := i.Evict("unsent.bin")
+		freed, kept, err := i.Cache().Evict("unsent.bin")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if freed != 0 || kept != 1 {
 			t.Errorf("freed %d bytes and kept %d, want 0 and 1", freed, kept)
 		}
-		if _, err := os.Stat(i.DataPath("unsent.bin")); err != nil {
+		if _, err := os.Stat(i.Cache().DataPath("unsent.bin")); err != nil {
 			t.Errorf("the file with unsent changes was deleted: %v", err)
 		}
 	})
@@ -336,7 +337,7 @@ func TestEvict(t *testing.T) {
 	t.Run("refuses to leave the cache", func(t *testing.T) {
 		i := cache(t)
 		for _, rel := range []string{"", " ", "/", ".", "..", "../..", "a/../../elsewhere"} {
-			if _, _, err := i.Evict(rel); err == nil {
+			if _, _, err := i.Cache().Evict(rel); err == nil {
 				t.Errorf("Evict(%q) was allowed", rel)
 			}
 		}
@@ -348,7 +349,7 @@ func TestEvict(t *testing.T) {
 
 	t.Run("evicting something absent is not an error", func(t *testing.T) {
 		i := cache(t)
-		freed, kept, err := i.Evict("never/downloaded")
+		freed, kept, err := i.Cache().Evict("never/downloaded")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -407,5 +408,57 @@ func TestPublisherSkipsUnchangedWrites(t *testing.T) {
 	}
 	if len(loaded.Pinned) != 1 || loaded.Pinned[0] != "Documents" {
 		t.Errorf("changed snapshot was not written: %+v", loaded)
+	}
+}
+
+// TestPublisherConcurrent is the regression test for the race on the dedupe
+// buffer: in the daemon every status change publishes, and those arrive from
+// the stats poller, both sync runners and the HTTP handlers at once.
+func TestPublisherConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPublisher(filepath.Join(dir, "file-manager.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for k := 0; k < 100; k++ {
+				info := Info{Active: true, Mode: "stream", Root: "/home/u/GoogleDrive", State: "idle"}
+				if k%2 == 0 {
+					info.State = "syncing"
+				}
+				if err := p.Publish(info); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestIsPinnedNormalises covers pins that reach the published file in a form an
+// older version wrote. The daemon normalises them (see config.normalizeOffline),
+// so the indicator has to match the same way or a pin is honoured by the daemon
+// and invisible on screen.
+func TestIsPinnedNormalises(t *testing.T) {
+	i := Info{Root: "/home/u/GoogleDrive", Pinned: []string{"/USA/", " Docs "}}
+	for _, tc := range []struct {
+		rel  string
+		want bool
+	}{
+		{"USA", true},
+		{"USA/pass.pdf", true},
+		{"/USA", true},
+		{"USAX", false},
+		{"Docs/tax.pdf", true},
+		{"", false},
+	} {
+		if got := i.IsPinned(tc.rel); got != tc.want {
+			t.Errorf("IsPinned(%q) = %t, want %t", tc.rel, got, tc.want)
+		}
 	}
 }

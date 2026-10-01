@@ -80,7 +80,10 @@ else
     info "$("$GO" version)"
     run "build" "$GO" build ./...
     run "vet" "$GO" vet ./...
-    run "test" "$GO" test ./...
+    # -race: the daemon shares one config and one status store across the HTTP
+    # handlers, the sync runners and the stats poller. Those races are exactly
+    # the kind that pass a plain test run.
+    run "test (race)" "$GO" test -race ./...
 
     # Ignore the two files that were already unformatted before this check
     # existed, so a pre-existing wart cannot mask a new one.
@@ -103,9 +106,26 @@ elif ! command -v cmake >/dev/null 2>&1; then
 else
     build_dir=$(mktemp -d)
     trap 'rm -rf "$build_dir"' EXIT
-    if out=$(cmake -S internal/dolphin/plugin -B "$build_dir" -DCMAKE_BUILD_TYPE=Release 2>&1); then
+    if out=$(cmake -S internal/dolphin/plugin -B "$build_dir" -DCMAKE_BUILD_TYPE=Release \
+        -DTDRIVE_BUILD_TESTS=ON 2>&1); then
         if out=$(cmake --build "$build_dir" --parallel 2>&1); then
             pass "compile"
+            # Run the shared specification against the C++ side. The Go side
+            # runs the same file in `go test ./internal/fmstate`, so a state
+            # rule changed on one side only fails here.
+            spec="internal/fmstate/testdata/state_cases.json"
+            if [ -x "$build_dir/tdrivestate_test" ]; then
+                scratch=$(mktemp -d)
+                if out=$("$build_dir/tdrivestate_test" "$spec" "$scratch" 2>&1); then
+                    pass "shared state spec (C++): ${out##*  }"
+                else
+                    fail "shared state spec (C++)"
+                    printf '%s\n' "$out" | sed 's/^/       /'
+                fi
+                rm -rf "$scratch"
+            else
+                skip "shared state spec (C++): test binary not built"
+            fi
         else
             fail "compile"
             printf '%s\n' "$out" | tail -25 | sed 's/^/       /'
@@ -116,9 +136,8 @@ else
     fi
 fi
 
-# The two implementations of the state logic must stay in step; this only checks
-# that both still mention every state, which catches the usual "added it on one
-# side only" mistake.
+# Cheap cross-check that runs without a compiler: both sides must still name
+# every state. The real parity check is the shared specification above.
 missing=""
 for state in cloud partial cached pinned pinning uploading local; do
     cpp="internal/dolphin/plugin/tdrivestate.h"

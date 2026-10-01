@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Package config loads and persists the application configuration.
+//
+// One *Config is shared by every goroutine in the daemon: the HTTP handlers,
+// the manager and both sync runners. Its fields are therefore unexported and
+// reachable only through accessors that hold the mutex, and every setter
+// persists the file while still holding it. Callers cannot forget to save, and
+// a reader can never observe a half-applied change.
 package config
 
 import (
@@ -16,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"tdrive-sync/internal/i18n"
+	"tdrive-sync/internal/xdg"
 )
 
 // SyncMode selects how the Drive is made available locally.
@@ -28,6 +35,20 @@ const (
 	// ModeMirror keeps a full two-way-synced local copy of the Drive.
 	ModeMirror SyncMode = "mirror"
 )
+
+// Modes lists every selectable sync mode. Callers validating user input go
+// through ParseMode rather than comparing against the constants themselves.
+var Modes = []SyncMode{ModeStream, ModeMirror}
+
+// ParseMode maps a string to a sync mode, reporting whether it names one.
+func ParseMode(s string) (SyncMode, bool) {
+	for _, m := range Modes {
+		if string(m) == s {
+			return m, true
+		}
+	}
+	return "", false
+}
 
 // Conflict resolution strategies for mirror mode.
 const (
@@ -82,8 +103,9 @@ func ParseGoogleCredsJSON(data []byte) (GoogleCreds, error) {
 	return GoogleCreds{ClientID: pick.ClientID, ClientSecret: pick.ClientSecret}, nil
 }
 
-// Config is the persisted application state.
-type Config struct {
+// data is the persisted part of the configuration, separated from the lock and
+// the file path so it can be marshalled as a whole.
+type data struct {
 	// AccountEmail is informational, filled after a successful login.
 	AccountEmail string `yaml:"account_email"`
 	// RemoteName is the rclone remote name used internally.
@@ -111,15 +133,19 @@ type Config struct {
 	WebPort int `yaml:"web_port"`
 	// Google holds optional custom OAuth credentials.
 	Google GoogleCreds `yaml:"google"`
+}
 
-	mu   sync.Mutex `yaml:"-"`
-	path string     `yaml:"-"`
+// Config is the persisted application state. It is safe for concurrent use.
+type Config struct {
+	mu   sync.Mutex
+	d    data
+	path string
 }
 
 // Default returns a Config populated with sensible defaults.
 func Default() *Config {
 	home, _ := os.UserHomeDir()
-	return &Config{
+	return &Config{d: data{
 		RemoteName:        "gdrive",
 		Mode:              ModeStream,
 		LocalDir:          filepath.Join(home, "GoogleDrive"),
@@ -127,25 +153,11 @@ func Default() *Config {
 		MirrorIntervalSec: 300,
 		ConflictMode:      ConflictManual,
 		WebPort:           45677,
-	}
+	}}
 }
 
 // Dir returns the configuration directory, creating it if necessary.
-func Dir() (string, error) {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".config")
-	}
-	dir := filepath.Join(base, "tdrive-sync")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+func Dir() (string, error) { return xdg.ConfigDir() }
 
 // Path returns the config file path.
 func Path() (string, error) {
@@ -165,36 +177,191 @@ func Load() (*Config, error) {
 	cfg := Default()
 	cfg.path = path
 
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return cfg, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	if err := yaml.Unmarshal(raw, &cfg.d); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if cfg.path == "" {
-		cfg.path = path
+	if cfg.d.RemoteName == "" {
+		cfg.d.RemoteName = "gdrive"
 	}
-	if cfg.RemoteName == "" {
-		cfg.RemoteName = "gdrive"
+	if cfg.d.ConflictMode == "" {
+		cfg.d.ConflictMode = ConflictManual
 	}
-	if cfg.ConflictMode == "" {
-		cfg.ConflictMode = ConflictManual
+	if _, ok := ParseMode(string(cfg.d.Mode)); !ok {
+		cfg.d.Mode = ModeStream
 	}
+	// Normalise pins written by an older version or edited by hand, so the
+	// indicator's prefix matching and our own agree on what is pinned.
+	cfg.d.OfflinePaths = normalizeOffline(cfg.d.OfflinePaths)
 	return cfg, nil
 }
 
-// AutostartEnabled reports whether the app should register itself to start on
-// login.
-func (c *Config) AutostartEnabled() bool { return !c.AutostartDisabled }
+// -------- readers --------
 
-// Save atomically writes the config to disk.
+// AccountEmail returns the signed-in account, empty when signed out.
+func (c *Config) AccountEmail() string { return get(c, func(d *data) string { return d.AccountEmail }) }
+
+// RemoteName returns the internal rclone remote name.
+func (c *Config) RemoteName() string { return get(c, func(d *data) string { return d.RemoteName }) }
+
+// Mode returns the active sync mode.
+func (c *Config) Mode() SyncMode { return get(c, func(d *data) SyncMode { return d.Mode }) }
+
+// LocalDir returns the mount point (stream) or mirror root (mirror).
+func (c *Config) LocalDir() string { return get(c, func(d *data) string { return d.LocalDir }) }
+
+// MirrorIntervalSec returns the mirror-mode reconcile interval in seconds.
+func (c *Config) MirrorIntervalSec() int {
+	return get(c, func(d *data) int { return d.MirrorIntervalSec })
+}
+
+// ConflictMode returns how mirror-mode conflicts are handled.
+func (c *Config) ConflictMode() string { return get(c, func(d *data) string { return d.ConflictMode }) }
+
+// AutostartEnabled reports whether the app should start on login.
+func (c *Config) AutostartEnabled() bool {
+	return get(c, func(d *data) bool { return !d.AutostartDisabled })
+}
+
+// UpdatePrerelease reports whether prereleases are considered for updates.
+func (c *Config) UpdatePrerelease() bool {
+	return get(c, func(d *data) bool { return d.UpdatePrerelease })
+}
+
+// UpdateCheckDisabled reports whether automatic update checks are switched off.
+func (c *Config) UpdateCheckDisabled() bool {
+	return get(c, func(d *data) bool { return d.UpdateCheckDisabled })
+}
+
+// WebPort returns the settings-UI port.
+func (c *Config) WebPort() int { return get(c, func(d *data) int { return d.WebPort }) }
+
+// Google returns the configured custom OAuth client.
+func (c *Config) Google() GoogleCreds { return get(c, func(d *data) GoogleCreds { return d.Google }) }
+
+// Configured reports whether a login has been completed.
+func (c *Config) Configured() bool {
+	return get(c, func(d *data) bool { return d.AccountEmail != "" })
+}
+
+// OfflinePaths returns a copy of the Drive-relative paths kept offline.
+func (c *Config) OfflinePaths() []string {
+	return get(c, func(d *data) []string { return append([]string{}, d.OfflinePaths...) })
+}
+
+// IsOffline reports whether a Drive-relative path is kept offline, either by its
+// own pin or through a pinned parent folder.
+func (c *Config) IsOffline(p string) bool {
+	return get(c, func(d *data) bool { return IsOfflinePath(d.OfflinePaths, p) })
+}
+
+// get reads one value under the lock. A generic helper keeps every accessor a
+// single line, so adding a field cannot accidentally add an unlocked read.
+func get[T any](c *Config, fn func(*data) T) T {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fn(&c.d)
+}
+
+// -------- writers --------
+//
+// Each one applies its change and persists the file in a single critical
+// section, so a reader never sees a value that is not on disk yet.
+
+// SetAccountEmail records the signed-in account ("" when signed out).
+func (c *Config) SetAccountEmail(email string) error {
+	return c.set(func(d *data) { d.AccountEmail = email })
+}
+
+// SetMode switches the sync mode. An unknown mode is rejected.
+func (c *Config) SetMode(m SyncMode) error {
+	if _, ok := ParseMode(string(m)); !ok {
+		return fmt.Errorf("unknown sync mode %q", m)
+	}
+	return c.set(func(d *data) { d.Mode = m })
+}
+
+// SetLocalDir changes the mount point / mirror root. The path must be absolute:
+// it becomes a mount point, and a relative one would resolve against whatever
+// directory the daemon happens to run in.
+func (c *Config) SetLocalDir(p string) error {
+	p = strings.TrimSpace(p)
+	if !filepath.IsAbs(p) {
+		return errors.New(i18n.T("err.invalid_path"))
+	}
+	return c.set(func(d *data) { d.LocalDir = filepath.Clean(p) })
+}
+
+// SetConflictMode switches how mirror-mode conflicts are resolved. Anything but
+// ConflictManual means automatic resolution.
+func (c *Config) SetConflictMode(mode string) error {
+	if mode != ConflictManual {
+		mode = ConflictAuto
+	}
+	return c.set(func(d *data) { d.ConflictMode = mode })
+}
+
+// SetAutostartEnabled records whether the app should start on login.
+func (c *Config) SetAutostartEnabled(on bool) error {
+	return c.set(func(d *data) { d.AutostartDisabled = !on })
+}
+
+// SetUpdatePrerelease records whether prereleases are considered.
+func (c *Config) SetUpdatePrerelease(on bool) error {
+	return c.set(func(d *data) { d.UpdatePrerelease = on })
+}
+
+// SetGoogle stores custom OAuth client credentials.
+func (c *Config) SetGoogle(creds GoogleCreds) error {
+	return c.set(func(d *data) { d.Google = creds })
+}
+
+// SetOffline pins a Drive-relative path for offline use, or releases it.
+//
+// Pins are hierarchical: pinning a folder pins everything below it, so a path
+// already covered by a pinned ancestor is not added again, and pins below the
+// new one are dropped. Leaving them would make a later release of the folder
+// ineffective - the leftover pin pulls its file straight back into the cache.
+// Releasing drops the pin together with every pin below it, so releasing a
+// folder really releases its contents.
+func (c *Config) SetOffline(p string, on bool) error {
+	p = cleanOfflinePath(p)
+	if p == "" {
+		return errors.New(i18n.T("err.invalid_path"))
+	}
+	return c.set(func(d *data) {
+		if on {
+			d.OfflinePaths = addOffline(d.OfflinePaths, p)
+			return
+		}
+		d.OfflinePaths = removeOffline(d.OfflinePaths, p)
+	})
+}
+
+// set applies fn and writes the file, both under the lock.
+func (c *Config) set(fn func(*data)) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(&c.d)
+	return c.saveLocked()
+}
+
+// Save writes the config to disk. Setters do this themselves; this is for the
+// rare caller that needs to force a write.
 func (c *Config) Save() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.saveLocked()
+}
+
+// saveLocked atomically writes the config. The caller must hold c.mu.
+func (c *Config) saveLocked() error {
 	if c.path == "" {
 		p, err := Path()
 		if err != nil {
@@ -202,74 +369,73 @@ func (c *Config) Save() error {
 		}
 		c.path = p
 	}
-	data, err := yaml.Marshal(c)
+	raw, err := yaml.Marshal(&c.d)
 	if err != nil {
 		return err
 	}
 	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, c.path)
 }
 
-// Configured reports whether a login has been completed.
-func (c *Config) Configured() bool {
-	return c.AccountEmail != ""
-}
+// -------- offline-pin rules (pure, so they are testable on their own) --------
 
-// AddOffline registers a Drive-relative path as offline-available.
-//
-// Pins are hierarchical: pinning a folder pins everything below it, so a path
-// already covered by a pinned ancestor is not added again, and pins below the new
-// one are dropped. Leaving them would make a later release of the folder
-// ineffective – the leftover pin pulls its file straight back into the cache.
-func (c *Config) AddOffline(p string) {
-	p = cleanOfflinePath(p)
-	if p == "" {
-		return
+// addOffline returns paths with p pinned, dropping pins it now covers.
+func addOffline(paths []string, p string) []string {
+	if IsOfflinePath(paths, p) {
+		return paths
 	}
-	if c.IsOffline(p) {
-		return
-	}
-	out := c.OfflinePaths[:0]
-	for _, e := range c.OfflinePaths {
+	out := paths[:0]
+	for _, e := range paths {
 		if !covers(p, e) {
 			out = append(out, e)
 		}
 	}
-	c.OfflinePaths = append(out, p)
+	return append(out, p)
 }
 
-// RemoveOffline releases a pinned path together with every pin below it, so
-// releasing a folder really releases its contents ("free up space").
-func (c *Config) RemoveOffline(p string) {
-	p = cleanOfflinePath(p)
-	if p == "" {
-		return
-	}
-	out := c.OfflinePaths[:0]
-	for _, e := range c.OfflinePaths {
+// removeOffline returns paths without p and without any pin below it.
+func removeOffline(paths []string, p string) []string {
+	out := paths[:0]
+	for _, e := range paths {
 		if cleanOfflinePath(e) != p && !covers(p, e) {
 			out = append(out, e)
 		}
 	}
-	c.OfflinePaths = out
+	return out
 }
 
-// IsOffline reports whether a Drive-relative path is kept offline, either by its
-// own pin or through a pinned parent folder.
-func (c *Config) IsOffline(p string) bool {
+// IsOfflinePath reports whether p is pinned directly or through a parent
+// folder in pins. Exported so fmstate.Info.IsPinned (the C++ plugin's Go
+// counterpart) can share this exact rule instead of carrying its own copy.
+func IsOfflinePath(pins []string, p string) bool {
 	p = cleanOfflinePath(p)
 	if p == "" {
 		return false
 	}
-	for _, e := range c.OfflinePaths {
+	for _, e := range pins {
 		if e = cleanOfflinePath(e); e == p || covers(e, p) {
 			return true
 		}
 	}
 	return false
+}
+
+// normalizeOffline cleans every pin and drops empty and duplicate entries.
+func normalizeOffline(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, e := range paths {
+		e = cleanOfflinePath(e)
+		if e == "" || seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	return out
 }
 
 // covers reports whether the pinned path parent contains child.
@@ -291,6 +457,8 @@ func cleanOfflinePath(p string) string {
 	return p
 }
 
+// -------- derived paths --------
+
 // RcloneConfPath is where the rclone remote definition lives.
 func RcloneConfPath() (string, error) {
 	dir, err := Dir()
@@ -300,23 +468,8 @@ func RcloneConfPath() (string, error) {
 	return filepath.Join(dir, "rclone.conf"), nil
 }
 
-// StateDir returns the runtime-state directory (status file, logs), creating it
-// if necessary. Follows $XDG_STATE_HOME, defaulting to ~/.local/state.
-func StateDir() (string, error) {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".local", "state")
-	}
-	dir := filepath.Join(base, "tdrive-sync")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+// StateDir returns the runtime-state directory (status file, logs), creating it.
+func StateDir() (string, error) { return xdg.StateDir() }
 
 // StatusPath returns the path of the JSON status file used for monitoring.
 func StatusPath() (string, error) {
@@ -338,4 +491,22 @@ func LogDir() (string, error) {
 		return "", err
 	}
 	return logs, nil
+}
+
+// RcloneCacheDir returns the directory handed to rclone as --cache-dir, creating
+// it. rclone lays out "vfs/<remote>/…" (data) and "vfsMeta/<remote>/…"
+// (metadata) below it; see package fmstate, which reads both back.
+func RcloneCacheDir() (string, error) {
+	dir, err := xdg.CacheDir()
+	if err != nil {
+		return "", err
+	}
+	// Historical layout: the directory is itself called "vfs", so the data files
+	// end up under ".../vfs/vfs/<remote>/". Renaming it would strand the caches
+	// of existing installations, so it stays until a release that migrates them.
+	cache := filepath.Join(dir, "vfs")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		return "", err
+	}
+	return cache, nil
 }

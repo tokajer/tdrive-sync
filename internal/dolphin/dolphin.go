@@ -12,6 +12,7 @@
 package dolphin
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -19,6 +20,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"tdrive-sync/internal/xdg"
 )
 
 //go:embed plugin
@@ -57,15 +61,15 @@ func resolvePaths() (Paths, error) {
 	if err != nil {
 		return Paths{}, err
 	}
-	cache, err := os.UserCacheDir()
+	cache, err := xdg.CacheDir()
 	if err != nil {
-		cache = filepath.Join(home, ".cache")
+		return Paths{}, err
 	}
-	confDir := os.Getenv("XDG_CONFIG_HOME")
-	if confDir == "" {
-		confDir = filepath.Join(home, ".config")
+	confDir, err := xdg.ConfigHome()
+	if err != nil {
+		return Paths{}, err
 	}
-	work := filepath.Join(cache, "tdrive-sync", "dolphin-plugin")
+	work := filepath.Join(cache, "dolphin-plugin")
 	pluginDir := filepath.Join(home, pluginRoot)
 	return Paths{
 		Source:        filepath.Join(work, "src"),
@@ -78,9 +82,14 @@ func resolvePaths() (Paths, error) {
 	}, nil
 }
 
+// buildTimeout bounds one cmake invocation. Without it a build that hangs would
+// leave the settings page with a job that never finishes and an install button
+// that stays dead until the daemon restarts.
+const buildTimeout = 15 * time.Minute
+
 // Install compiles the plugins and puts them where Dolphin can find them.
-// Progress and hints go to logf.
-func Install(logf func(string, ...any)) error {
+// Progress and hints go to logf. Cancelling ctx stops the running build.
+func Install(ctx context.Context, logf func(string, ...any)) error {
 	p, err := resolvePaths()
 	if err != nil {
 		return err
@@ -98,12 +107,12 @@ func Install(logf func(string, ...any)) error {
 	}
 
 	logf("configuring (cmake)…")
-	if out, err := run(p.Build, "cmake", "-S", p.Source, "-B", p.Build, "-DCMAKE_BUILD_TYPE=Release"); err != nil {
+	if out, err := runBuild(ctx, p.Build, "cmake", "-S", p.Source, "-B", p.Build, "-DCMAKE_BUILD_TYPE=Release"); err != nil {
 		logf("%s", out)
 		return fmt.Errorf("cmake could not configure the build: %w\n\n%s", err, buildDepsHint())
 	}
 	logf("compiling…")
-	if out, err := run(p.Build, "cmake", "--build", p.Build, "--parallel"); err != nil {
+	if out, err := runBuild(ctx, p.Build, "cmake", "--build", p.Build, "--parallel"); err != nil {
 		logf("%s", out)
 		return fmt.Errorf("the plugin did not compile: %w", err)
 	}
@@ -137,8 +146,10 @@ func Install(logf func(string, ...any)) error {
 	return nil
 }
 
-// Remove deletes the plugins and the environment entries again.
-func Remove(logf func(string, ...any)) error {
+// Remove deletes the plugins and the environment entries again. It takes a
+// context only so it matches Install and both can be driven by one job runner;
+// removing files is quick and does not check it.
+func Remove(_ context.Context, logf func(string, ...any)) error {
 	p, err := resolvePaths()
 	if err != nil {
 		return err
@@ -287,14 +298,21 @@ func osReleaseIDs(content string) []string {
 	return ids
 }
 
-// run executes a command in dir, returning its combined output.
-func run(dir, name string, args ...string) (string, error) {
+// runBuild executes a build command in dir, returning its combined output. It is
+// bounded by buildTimeout and by ctx, so a stuck compiler cannot wedge the
+// caller's job slot.
+func runBuild(ctx context.Context, dir, name string, args ...string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("gave up after %s", buildTimeout)
+	}
 	return string(out), err
 }
 

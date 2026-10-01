@@ -11,16 +11,17 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// Notifier shows a desktop notification.
+// Notifier shows a desktop notification. The title is not part of the call:
+// DBus already shows the app name (set once, at construction) as the summary.
 type Notifier interface {
-	Notify(title, body string)
+	Notify(body string)
 }
 
 // Noop is a Notifier that does nothing.
 type Noop struct{}
 
 // Notify implements Notifier.
-func (Noop) Notify(string, string) {}
+func (Noop) Notify(string) {}
 
 // DBus posts notifications via org.freedesktop.Notifications.
 type DBus struct {
@@ -42,7 +43,7 @@ func NewDBus(appName, appIcon string) Notifier {
 }
 
 // Notify implements Notifier, replacing the previous notification in place.
-func (d *DBus) Notify(title, body string) {
+func (d *DBus) Notify(body string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	obj := d.conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
@@ -50,7 +51,7 @@ func (d *DBus) Notify(title, body string) {
 		d.appName,           // app_name
 		d.lastID,            // replaces_id
 		d.appIcon,           // app_icon
-		title,               // summary
+		d.appName,           // summary
 		body,                // body
 		[]string{},          // actions
 		map[string]dbus.Variant{}, // hints

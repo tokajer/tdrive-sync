@@ -21,8 +21,9 @@
 .direnv/
 .env
 .env.local
-
+/.claude/skills/
 # OS
 .DS_Store
 Thumbs.db
 desktop.ini
+/graphify-out

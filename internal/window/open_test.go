@@ -189,13 +189,13 @@ func TestRunPicksFirstWorkingLauncher(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("PATH", dir)
 
-	err := run("http://127.0.0.1/x", []launcher{
+	err := tryLaunchers("http://127.0.0.1/x", []launcher{
 		{name: "not-installed-at-all"},
 		{name: "broken-opener", wait: true},
 		{name: "good-opener", wait: true},
 	})
 	if err != nil {
-		t.Fatalf("run() error: %v", err)
+		t.Fatalf("tryLaunchers() error: %v", err)
 	}
 	got, err := os.ReadFile(log)
 	if err != nil {
@@ -212,11 +212,11 @@ func TestRunReportsWhenNothingWorks(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("PATH", dir)
 
-	err := run("http://127.0.0.1/x", []launcher{{name: "broken-opener", wait: true}})
+	err := tryLaunchers("http://127.0.0.1/x", []launcher{{name: "broken-opener", wait: true}})
 	if err == nil || !strings.Contains(err.Error(), "broken-opener") {
 		t.Errorf("run() error = %v, want it to name the failed launcher", err)
 	}
-	if err := run("http://127.0.0.1/x", []launcher{{name: "nothing-here"}}); err == nil ||
+	if err := tryLaunchers("http://127.0.0.1/x", []launcher{{name: "nothing-here"}}); err == nil ||
 		!strings.Contains(err.Error(), "found no desktop handler") {
 		t.Errorf("run() with no installed launcher = %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRunAcceptsForegroundBrowser(t *testing.T) {
 	// /usr/bin stays on the PATH so the script itself finds sleep.
 	t.Setenv("PATH", dir+":/usr/bin")
 
-	if err := run("http://127.0.0.1/x", []launcher{{name: "sleepy-browser"}}); err != nil {
+	if err := tryLaunchers("http://127.0.0.1/x", []launcher{{name: "sleepy-browser"}}); err != nil {
 		t.Errorf("run() error: %v", err)
 	}
 }

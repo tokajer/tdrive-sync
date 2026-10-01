@@ -105,11 +105,12 @@ running on this machine, which is usually the context you need.
 | Package | Responsibility |
 |---|---|
 | `cmd/tdrive-sync` | entry point; subcommand dispatch, daemon wiring, CLI commands |
-| `internal/config` | YAML config load/save, XDG paths, offline-pin list |
+| `internal/xdg` | the freedesktop base directories, resolved in one place |
+| `internal/config` | YAML config load/save, offline-pin list; fields live behind accessors that lock and persist |
 | `internal/rclone` | locate the binary, OAuth login, build mount/bisync arguments, RC client, `lsjson` listing |
-| `internal/manager` | the controller: status, mode start/stop, pinning, warming, conflicts, auto-recovery, inotify watcher |
+| `internal/manager` | the controller: status store, mode start/stop, pinning, warming, conflicts, login. Each mode is a `Runner` (`stream.go`, `mirror.go`) reached through a registry, so the controller never switches on the mode |
 | `internal/fmstate` | per-file state for file managers: published snapshot, VFS cache inspection, cache eviction |
-| `internal/dolphin` | KDE integration: embedded KIO plugin sources (C++) plus the installer |
+| `internal/dolphin` | KDE integration: embedded KIO plugin sources (C++), the installer, and the preview-marker keeper |
 | `internal/webui` | loopback HTTP server, JSON API, embedded single-page frontend |
 | `internal/window` | native window via WebKitGTK (dlopen, no dev headers), desktop entry, autostart, URL opening |
 | `internal/tray` | tray icon over DBus StatusNotifierItem (no GTK, no cgo) |
@@ -122,7 +123,7 @@ running on this machine, which is usually the context you need.
 
 This is the least obvious part of the codebase, so here is the whole chain:
 
-1. `manager.broadcast()` → `publishFM()` writes
+1. Every status change → `publishFM()` writes
    `~/.local/state/tdrive-sync/file-manager.json` (`internal/fmstate`): mode,
    sync folder, cache location, remote name, pinned paths, daemon binary. Writes
    that would not change the content are skipped, so watchers stay quiet.
@@ -143,10 +144,18 @@ This is the least obvious part of the codebase, so here is the whole chain:
 
 The same logic exists twice, deliberately: in Go
 ([internal/fmstate/fmstate.go](internal/fmstate/fmstate.go), used by the CLI and
-covered by tests) and in C++
+the daemon) and in C++
 ([internal/dolphin/plugin/tdrivestate.cpp](internal/dolphin/plugin/tdrivestate.cpp),
-used by Dolphin). **Change one, change the other**, and keep
-`fmstate_test.go` as the specification of the expected behaviour.
+used by Dolphin). **Change one, change the other.**
+
+What keeps them honest is
+[internal/fmstate/testdata/state_cases.json](internal/fmstate/testdata/state_cases.json):
+one fixture describing a cache layout and the state it must produce. `go test
+./internal/fmstate` runs it against the Go side, and `scripts/check.sh --plugin`
+builds `tdrivestate_test` and runs the same file against the C++ side. A rule
+changed on one side only fails the check instead of showing the user one state
+in the CLI and a different one in Dolphin. Add a case there for every state rule
+you touch.
 
 ## Hard-won facts – do not re-derive these
 
@@ -177,7 +186,7 @@ used by Dolphin). **Change one, change the other**, and keep
   `vfs/<remote>/<folder>/` as soon as it touches one file below it, freeing a
   single file leaves the parent folders behind, and a file that was merely opened
   stays a fully sparse placeholder. "The cache folder exists" therefore does *not*
-  mean anything is local – `fmstate.dirHasData` (mirrored in the C++ plugin)
+  mean anything is local – `fmstate.Cache.DirHasData` (mirrored in the C++ plugin)
   answers that with a deliberately bounded scan, because it runs inside an overlay
   lookup.
 - **Offline pins are hierarchical.** A pinned folder pins everything below it, so
@@ -198,14 +207,24 @@ used by Dolphin). **Change one, change the other**, and keep
   path. Its `Timestamp` must be newer than `ViewPropsTimestamp` in `dolphinrc`, or
   Dolphin discards the file as outdated. **View properties are per folder and are
   not inherited**, so the marker has to exist for every folder in the Drive;
-  `Manager.previewFolders` refreshes them every 30 minutes from
-  `rclone lsjson --dirs-only --recursive`. A folder's own properties arrive after
+  `dolphin.Keeper` (started in `cmd`, not by the manager) refreshes them every 30
+  minutes from `rclone lsjson --dirs-only --recursive`. A folder's own properties arrive after
   its view is up, so the first visit previews once anyway; only the *global*
   view-properties default (`SetPreviewsDefault`, opt-in, reaches beyond the sync
   folder) prevents that – measured: Dolphin honours that fallback even in
   per-folder mode.
 - **The mount's RC API needs auth.** Credentials are random per daemon run and only
-  exist in that process's environment, so an outside tool cannot drive it.
+  exist in that process's environment, so an outside tool cannot drive it. Its
+  port is the settings port plus one; when something else holds it, the mount
+  comes up but nothing can be refreshed, which `stream.go` now reports as an
+  error instead of leaving the status on "starting".
+- **The settings socket is the single-instance lock.** `cmd` binds it before the
+  manager starts. Asking over HTTP first is not enough: a daemon that is still
+  coming up does not answer yet, and the second launch would mount over the
+  first one's mount point and unmount it again on its way out.
+- **One `*config.Config` is shared by every goroutine.** Its fields are
+  unexported; the accessors lock, and the setters persist the file in the same
+  critical section. Nothing outside the package calls `Save()`.
 
 ## Conventions in this codebase
 
@@ -252,7 +271,9 @@ is needed again.
 | Change what the tray or window shows | `internal/tray/menu.go`, `internal/webui/index.html` |
 | Add a setting | `internal/config/config.go` → `internal/webui/webui.go` → `index.html` → both i18n catalogs |
 | Change sync behaviour / rclone flags | `internal/rclone/rclone.go` (`MountArgs`, `BisyncArgs`) |
-| Change mode control, recovery, pinning | `internal/manager/runners.go`, `manager.go` |
-| Change the indicator or its states | `internal/fmstate/` **and** `internal/dolphin/plugin/` |
+| Change mode control or login | `internal/manager/manager.go` |
+| Change mount behaviour / recovery | `internal/manager/stream.go`, `mirror.go` (timings in `tuning.go`) |
+| Change pinning, warming, freeing space | `internal/manager/offline.go`, `internal/fmstate/cache.go` |
+| Change the indicator or its states | `internal/fmstate/` **and** `internal/dolphin/plugin/`, plus a case in `internal/fmstate/testdata/state_cases.json` – that fixture runs against both implementations |
 | Add another file manager | `internal/fmstate` is desktop-agnostic; add a sibling of `internal/dolphin` |
 | AppImage packaging | `build-appimage.sh`, `packaging/` |

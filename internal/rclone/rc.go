@@ -65,14 +65,19 @@ func (r *RC) Refresh(ctx context.Context, dir string) error {
 	return err
 }
 
-// Forget evicts a directory from the VFS cache (used when unpinning offline).
+// Forget drops dir's cached directory listing, so rclone re-reads it from
+// Drive on next access. It frees no data by itself - vfs/forget only discards
+// listings, never cached file content (see fmstate.Cache.Evict for actually
+// freeing space, which is what unpinning offline calls first).
 func (r *RC) Forget(ctx context.Context, dir string) error {
 	_, err := r.call(ctx, "vfs/forget", map[string]any{"dir": dir})
 	return err
 }
 
-// ForgetFile evicts a single file from the VFS cache. rclone distinguishes the
-// two by parameter name, so a file must not be passed to Forget.
+// ForgetFile drops a single file's cached listing entry the same way Forget
+// does for a directory - no file content is freed here either. rclone
+// distinguishes the two by parameter name, so a file must not be passed to
+// Forget.
 func (r *RC) ForgetFile(ctx context.Context, file string) error {
 	_, err := r.call(ctx, "vfs/forget", map[string]any{"file": file})
 	return err

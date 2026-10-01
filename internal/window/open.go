@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"tdrive-sync/internal/xdg"
 )
 
 // This file owns every hand-off to the desktop: opening a URL in the user's
@@ -50,7 +52,7 @@ func OpenExternal(rawURL string) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("refusing to open %q: only http and https URLs are opened", rawURL)
 	}
-	return run(u.String(), browserLaunchers())
+	return tryLaunchers(u.String(), browserLaunchers())
 }
 
 // OpenPath opens a local file or directory in the desktop's file manager.
@@ -58,7 +60,7 @@ func OpenPath(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("no path given")
 	}
-	return run(path, fileLaunchers())
+	return tryLaunchers(path, fileLaunchers())
 }
 
 // browserLaunchers lists the commands tried for a URL: the user's own $BROWSER
@@ -107,9 +109,9 @@ func browserEnvLaunchers() []launcher {
 	return out
 }
 
-// run tries each launcher in turn and returns nil as soon as one took the
-// target. Every failure is collected so the log names what was tried.
-func run(target string, cands []launcher) error {
+// tryLaunchers tries each launcher in turn and returns nil as soon as one took
+// the target. Every failure is collected so the log names what was tried.
+func tryLaunchers(target string, cands []launcher) error {
 	env := childEnv()
 	path := envValue(env, "PATH")
 	var failures []string
@@ -269,7 +271,7 @@ func isExecutable(p string) bool {
 
 // shimDir is the directory holding our xdg-open shim (see InstallOpenShim).
 func shimDir() string {
-	cache, err := os.UserCacheDir()
+	cache, err := xdg.CacheHome()
 	if err != nil {
 		return ""
 	}

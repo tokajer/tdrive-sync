@@ -153,3 +153,59 @@ func TestCheckUpToDate(t *testing.T) {
 		t.Fatalf("state = %q, want uptodate", st.State)
 	}
 }
+
+// TestComparePrereleaseDepth is the regression test for an index-out-of-range
+// panic: the loop ran to the longer of the two identifier lists and indexed
+// both before checking the bounds. It ran in the background update-check
+// goroutine, so a release pair like v1.0.0-rc / v1.0.0-rc.2 on the project's
+// GitHub page took the whole daemon down every six hours.
+func TestComparePrereleaseDepth(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0-rc", "1.0.0-rc.2", -1}, // fewer identifiers sort lower
+		{"1.0.0-rc.2", "1.0.0-rc", 1},
+		{"1.0.0-alpha", "1.0.0-alpha.1.2.3", -1},
+		{"1.0.0-rc.1", "1.0.0-rc.1", 0},
+		{"1.0.0-rc.2", "1.0.0-rc.10", -1}, // numeric identifiers compare as numbers
+		{"1.0.0-alpha", "1.0.0-beta", -1},
+		{"1.0.0-rc.1", "1.0.0", -1}, // a prerelease sorts below the release
+		{"1.0.0", "1.0.0-rc.1", 1},
+	}
+	for _, tc := range cases {
+		if got := compareVersions(tc.a, tc.b); got != tc.want {
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// TestPickWithMixedPrereleaseDepth drives the same input through the path that
+// actually crashed: picking the best release out of a GitHub listing.
+func TestPickWithMixedPrereleaseDepth(t *testing.T) {
+	rels := []ghRelease{
+		{TagName: "v1.0.0-rc", Prerelease: true, Assets: []asset{{Name: "app-x86_64.AppImage", URL: "u1"}}},
+		{TagName: "v1.0.0-rc.2", Prerelease: true, Assets: []asset{{Name: "app-x86_64.AppImage", URL: "u2"}}},
+	}
+	best := pick(rels, true)
+	if best == nil {
+		t.Fatal("no release picked")
+	}
+	if best.Tag != "v1.0.0-rc.2" {
+		t.Errorf("picked %q, want v1.0.0-rc.2", best.Tag)
+	}
+}
+
+// TestApplyRejectsSecondRun covers the missing guard: login and the Dolphin
+// build both refuse a second start, apply did not, so two clicks meant two
+// downloads renaming onto the same running AppImage.
+func TestApplyRejectsSecondRun(t *testing.T) {
+	u := New("1.0.0", false, nil)
+	u.appImage = filepath.Join(t.TempDir(), "app.AppImage")
+	u.latest = &Release{Version: "2.0.0", Tag: "v2.0.0"}
+	u.applying = true
+
+	if err := u.Apply(context.Background()); err == nil {
+		t.Fatal("a second apply must be refused while one is running")
+	}
+}

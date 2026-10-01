@@ -1,0 +1,191 @@
+{
+  "_comment": [
+    "The specification both implementations of the state logic have to satisfy:",
+    "internal/fmstate (Go, the CLI and the daemon) and",
+    "internal/dolphin/plugin/tdrivestate.cpp (C++, what Dolphin loads).",
+    "",
+    "The duplication is deliberate - an overlay lookup runs for every visible",
+    "item and must not go through any IPC - so this file is what keeps the two",
+    "from drifting apart. Running it on both sides is what `scripts/check.sh",
+    "--plugin` does.",
+    "",
+    "Each case describes one cache entry:",
+    "  size    the full size of the Drive file",
+    "  filled  how many bytes at the front are actually downloaded",
+    "          (the cache file is sparse: always `size` long, `filled` allocated)",
+    "  dirty   the local copy holds changes that have not reached Drive",
+    "  ranges  what rclone recorded as downloaded, [pos, len] pairs",
+    "  meta    false leaves the metadata file out entirely",
+    "  dir     the entry is a folder rather than a file",
+    "  pinned  the pins in effect, Drive-relative",
+    "  mode    the sync mode, default \"stream\""
+  ],
+  "cases": [
+    {
+      "name": "nothing cached",
+      "rel": "a.bin",
+      "present": false,
+      "want": "cloud"
+    },
+    {
+      "name": "fully downloaded",
+      "rel": "a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "want": "cached"
+    },
+    {
+      "name": "partly downloaded",
+      "rel": "a.bin",
+      "size": 1048576,
+      "filled": 4096,
+      "want": "partial"
+    },
+    {
+      "name": "opened but never filled",
+      "rel": "a.bin",
+      "size": 1048576,
+      "filled": 0,
+      "want": "cloud"
+    },
+    {
+      "name": "recorded ranges cover the whole file",
+      "rel": "a.bin",
+      "size": 8192,
+      "filled": 4096,
+      "ranges": [[0, 8192]],
+      "want": "cached"
+    },
+    {
+      "name": "recorded ranges leave a gap",
+      "rel": "a.bin",
+      "size": 8192,
+      "filled": 4096,
+      "ranges": [[0, 1024], [4096, 4096]],
+      "want": "partial"
+    },
+    {
+      "name": "unsent local changes",
+      "rel": "a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "dirty": true,
+      "want": "uploading"
+    },
+    {
+      "name": "dirty outranks a pin",
+      "rel": "a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "dirty": true,
+      "pinned": ["a.bin"],
+      "want": "uploading"
+    },
+    {
+      "name": "complete and pinned",
+      "rel": "a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "pinned": ["a.bin"],
+      "want": "pinned"
+    },
+    {
+      "name": "pinned through a parent folder",
+      "rel": "dir/a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "pinned": ["dir"],
+      "want": "pinned"
+    },
+    {
+      "name": "pinned but still downloading",
+      "rel": "a.bin",
+      "size": 1048576,
+      "filled": 4096,
+      "pinned": ["a.bin"],
+      "want": "pinning"
+    },
+    {
+      "name": "pinned and not started",
+      "rel": "a.bin",
+      "present": false,
+      "pinned": ["a.bin"],
+      "want": "pinning"
+    },
+    {
+      "name": "an empty file counts as complete",
+      "rel": "empty",
+      "size": 0,
+      "filled": 0,
+      "want": "cached"
+    },
+    {
+      "name": "no metadata file, fully allocated",
+      "rel": "a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "meta": false,
+      "want": "cached"
+    },
+    {
+      "name": "a shared prefix is not a pinned parent",
+      "rel": "USAX/a.bin",
+      "size": 4096,
+      "filled": 4096,
+      "pinned": ["USA"],
+      "want": "cached"
+    },
+    {
+      "name": "an unnormalised pin still counts",
+      "rel": "USA/pass.pdf",
+      "size": 4096,
+      "filled": 4096,
+      "pinned": ["/USA/"],
+      "want": "pinned"
+    },
+    {
+      "name": "an empty pin entry is ignored",
+      "rel": "a.bin",
+      "size": 1048576,
+      "filled": 4096,
+      "pinned": [""],
+      "want": "partial"
+    },
+    {
+      "name": "mirror mode is always local",
+      "rel": "a.bin",
+      "present": false,
+      "mode": "mirror",
+      "want": "local"
+    },
+    {
+      "name": "folder holding data",
+      "rel": "dir",
+      "dir": true,
+      "children": [{"rel": "dir/a.bin", "size": 4096, "filled": 4096}],
+      "want": "partial"
+    },
+    {
+      "name": "folder holding only placeholders",
+      "rel": "dir",
+      "dir": true,
+      "children": [{"rel": "dir/a.bin", "size": 1048576, "filled": 0}],
+      "want": "cloud"
+    },
+    {
+      "name": "emptied folder",
+      "rel": "dir",
+      "dir": true,
+      "children": [],
+      "want": "cloud"
+    },
+    {
+      "name": "pinned folder",
+      "rel": "dir",
+      "dir": true,
+      "children": [{"rel": "dir/a.bin", "size": 4096, "filled": 4096}],
+      "pinned": ["dir"],
+      "want": "pinned"
+    }
+  ]
+}

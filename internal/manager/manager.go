@@ -4,6 +4,9 @@
 // Package manager orchestrates the sync backend: it owns the current status,
 // starts/stops the active sync mode (stream mount or mirror bisync), handles
 // login/logout, and manages offline-pinned paths.
+//
+// The modes themselves live behind the Runner interface (stream.go, mirror.go),
+// so the manager decides which one is active without knowing what either does.
 package manager
 
 import (
@@ -13,47 +16,71 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"sync"
 	"time"
 
 	"tdrive-sync/internal/config"
-	"tdrive-sync/internal/dolphin"
 	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/notify"
 	"tdrive-sync/internal/rclone"
-	"tdrive-sync/internal/window"
 )
 
-// appName is the title shown on desktop notifications.
-const appName = "TDrive Sync"
+// Logger receives the daemon's diagnostic output. *logbuf.Buffer implements it;
+// the interface keeps this package independent of where the lines end up.
+type Logger interface {
+	// Logf records a line whose severity has to be guessed from its text.
+	Logf(format string, args ...any)
+	// Errorf records a line the caller knows to be an error.
+	Errorf(format string, args ...any)
+}
 
-// State is a coarse sync state used for the tray icon and UI.
-type State string
+// nopLogger discards everything, for callers that do not want a log.
+type nopLogger struct{}
 
-const (
-	StateDisconnected State = "disconnected" // not signed in
-	StateStarting     State = "starting"     // mount/bisync coming up
-	StateSyncing      State = "syncing"      // transfers in progress
-	StateIdle         State = "idle"         // up to date
-	StatePaused       State = "paused"       // user paused
-	StateError        State = "error"        // needs attention
-)
+func (nopLogger) Logf(string, ...any)   {}
+func (nopLogger) Errorf(string, ...any) {}
 
-// Status is an immutable snapshot handed to observers.
-type Status struct {
-	State        State           `json:"state"`
-	Mode         config.SyncMode `json:"mode"`
-	ConflictMode string          `json:"conflict_mode"`
-	Message      string          `json:"message"`
-	Account      string          `json:"account"`
-	LocalDir     string          `json:"local_dir"`
-	Bytes        int64           `json:"bytes"`
-	Speed        float64         `json:"speed"`
-	Errors       int64           `json:"errors"`
-	LastSync     time.Time       `json:"last_sync"`
-	Offline      []string        `json:"offline"`
+// Engine starts the sync processes. The real one is *rclone.Client; naming it
+// as an interface is what lets the mode runners - the auto-recovery path above
+// all - be tested without an rclone binary or a FUSE mount.
+type Engine interface {
+	// MountArgs builds the argument list for a stream-mode mount.
+	MountArgs(mountpoint, rcAddr, cacheDir string) []string
+	// BisyncArgs builds the argument list for a mirror-mode reconcile.
+	// resyncMode "" runs a normal bisync; any other value forces a full
+	// `--resync --resync-mode <resyncMode>` reconciliation.
+	BisyncArgs(localDir, workdir string, manualConflicts bool, resyncMode string) []string
+	// Start launches a run, forwarding its output lines to onLine, and returns
+	// the command plus a channel carrying its exit error.
+	Start(args []string, onLine func(string)) (*exec.Cmd, chan error, error)
+}
+
+// Control is the mount's remote-control API, as the runners use it.
+type Control interface {
+	Ping(ctx context.Context) bool
+	Refresh(ctx context.Context, dir string) error
+	Forget(ctx context.Context, dir string) error
+	ForgetFile(ctx context.Context, file string) error
+	CoreStats(ctx context.Context) (rclone.Stats, error)
+	ResetStats(ctx context.Context) error
+}
+
+// Runner drives one sync mode.
+type Runner interface {
+	// Run blocks until ctx is cancelled, keeping the mode alive in between.
+	Run(ctx context.Context)
+	// SyncNow asks for an immediate reconciliation. It is called from UI
+	// handlers and must not block.
+	SyncNow()
+}
+
+// runners maps each sync mode to its implementation. Adding a mode means adding
+// a Runner and one line here; nothing else in the package switches on the mode.
+var runners = map[config.SyncMode]func(*Manager) Runner{
+	config.ModeStream: func(m *Manager) Runner { return newStreamRunner(m) },
+	config.ModeMirror: func(m *Manager) Runner { return newMirrorRunner(m) },
 }
 
 // Manager is the central controller. All exported methods are safe for
@@ -61,65 +88,94 @@ type Status struct {
 type Manager struct {
 	cfg      *config.Config
 	rc       *rclone.Client
+	engine   Engine
+	ctl      Control
 	rcAddr   string
-	rcUser   string
-	rcPass   string
-	ctl      *rclone.RC
 	cacheDir string
+	cache    fmstate.Cache
 	notifier notify.Notifier
-	logf     func(string, ...any)
+	log      Logger
+	exe      string
+
+	// status owns the runtime status and its observers.
+	status *statusStore
 
 	// fmPub publishes the per-file state the file-manager integration renders.
-	fmPub fmstate.Publisher
+	fmPub *fmstate.Publisher
+
+	// lifecycle serialises stop/start so two callers cannot each leave a runner
+	// running; never take it from a runner goroutine (stopLocked waits for it).
+	lifecycle sync.Mutex
 
 	mu        sync.Mutex
-	status    Status
-	listeners []func(Status)
-
-	runCancel   context.CancelFunc
-	runWG       sync.WaitGroup
-	parent      context.Context
-	syncTrigger chan struct{}
+	parent    context.Context
+	runCancel context.CancelFunc
+	runWG     sync.WaitGroup
+	active    Runner
+	// paused is true between Pause and Resume. startLocked is a no-op while it
+	// holds, so configuration changes made during a pause (mode, local dir,
+	// conflict mode) only take effect once Resume starts a runner again.
+	paused bool
 }
 
-// New builds a Manager for the given config.
-func New(cfg *config.Config, notifier notify.Notifier, logf func(string, ...any)) (*Manager, error) {
-	rc, err := rclone.New(cfg.RemoteName, cfg.Google)
+// New builds a Manager for the given config. log may be nil.
+func New(cfg *config.Config, notifier notify.Notifier, log Logger) (*Manager, error) {
+	conf, err := config.RcloneConfPath()
 	if err != nil {
 		return nil, err
 	}
-	if logf == nil {
-		logf = func(string, ...any) {}
+	if log == nil {
+		log = nopLogger{}
 	}
-	rcAddr := fmt.Sprintf("127.0.0.1:%d", cfg.WebPort+1)
+	cacheDir, err := config.RcloneCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("could not prepare the cache directory: %w", err)
+	}
+	pub, err := fmstate.NewPublisher("")
+	if err != nil {
+		return nil, err
+	}
+
 	// Per-run random credentials for the mount's RC API: without them any local
 	// process (or a web page via CSRF) could drive the rclone control server.
 	rcPass, err := randomSecret()
 	if err != nil {
 		return nil, fmt.Errorf("could not generate RC credentials: %w", err)
 	}
-	rcUser := "tdrive-sync"
-	m := &Manager{
-		cfg:         cfg,
-		rc:          rc,
-		rcAddr:      rcAddr,
-		rcUser:      rcUser,
-		rcPass:      rcPass,
-		ctl:         rclone.NewRC(rcAddr, rcUser, rcPass),
-		cacheDir:    cacheDir(),
-		notifier:    notifier,
-		logf:        logf,
-		syncTrigger: make(chan struct{}, 1),
-		status: Status{
-			State:        StateDisconnected,
-			Mode:         cfg.Mode,
-			ConflictMode: cfg.ConflictMode,
-			Account:      cfg.AccountEmail,
-			LocalDir:     cfg.LocalDir,
-			Offline:      append([]string{}, cfg.OfflinePaths...),
-		},
+	const rcUser = "tdrive-sync"
+	rcAddr := fmt.Sprintf("127.0.0.1:%d", cfg.WebPort()+1)
+	rc, err := rclone.New(cfg.RemoteName(), conf, rcUser, rcPass)
+	if err != nil {
+		return nil, err
 	}
+
+	m := &Manager{
+		cfg:      cfg,
+		rc:       rc,
+		engine:   rc,
+		ctl:      rclone.NewRC(rcAddr, rcUser, rcPass),
+		rcAddr:   rcAddr,
+		cacheDir: cacheDir,
+		cache:    fmstate.Cache{Dir: cacheDir, Remote: cfg.RemoteName()},
+		notifier: notifier,
+		log:      log,
+		exe:      execPath(),
+		fmPub:    pub,
+	}
+	m.status = newStatusStore(m.settings)
+	m.status.SetState(StateDisconnected, i18n.T("status.signin_required"))
 	return m, nil
+}
+
+// settings returns the configuration half of a status snapshot.
+func (m *Manager) settings() Status {
+	return Status{
+		Mode:         m.cfg.Mode(),
+		ConflictMode: m.cfg.ConflictMode(),
+		Account:      m.cfg.AccountEmail(),
+		LocalDir:     m.cfg.LocalDir(),
+		Offline:      m.cfg.OfflinePaths(),
+	}
 }
 
 // randomSecret returns 32 hex characters from a cryptographic source.
@@ -131,70 +187,125 @@ func randomSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func cacheDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		base = os.TempDir()
+// execPath is the command the file-manager integration invokes for context-menu
+// actions. The outer AppImage path is preferred: it survives a restart, while
+// the executable inside points into a mount that vanishes on exit.
+func execPath() string {
+	if p := os.Getenv("APPIMAGE"); p != "" {
+		return p
 	}
-	d := filepath.Join(base, "tdrive-sync", "vfs")
-	_ = os.MkdirAll(d, 0o700)
-	return d
+	exe, _ := os.Executable()
+	return exe
 }
 
-// Rclone exposes the underlying rclone client (used by CLI login).
-func (m *Manager) Rclone() *rclone.Client { return m.rc }
+// Browse lists the immediate children of a Drive-relative directory.
+func (m *Manager) Browse(ctx context.Context, rel string) ([]rclone.Entry, error) {
+	return m.rc.List(ctx, rel)
+}
+
+// LocalDir is the configured sync folder.
+func (m *Manager) LocalDir() string { return m.cfg.LocalDir() }
+
+// SyncFolder reports the sync folder while a stream mount is serving it, and ""
+// otherwise. The Dolphin preview keeper uses it to decide whether there is
+// anything to write markers for; see internal/dolphin.
+func (m *Manager) SyncFolder() string {
+	st := m.status.Get()
+	if st.Mode != config.ModeStream || !st.Active() {
+		return ""
+	}
+	return st.LocalDir
+}
+
+// ListDirs returns every folder below a Drive-relative path.
+func (m *Manager) ListDirs(ctx context.Context, rel string) ([]string, error) {
+	return m.rc.ListDirs(ctx, rel)
+}
 
 // Start begins syncing according to the current config. It returns immediately;
 // work happens in background goroutines until ctx is cancelled.
 func (m *Manager) Start(ctx context.Context) {
+	m.mu.Lock()
 	m.parent = ctx
+	m.mu.Unlock()
+	// Subscribed here rather than in New: the CLI's one-shot `login` command
+	// builds a Manager that never starts, and must not overwrite the running
+	// daemon's file-manager.json with an inactive snapshot.
+	m.status.Subscribe(m.publishFM)
 	if !m.cfg.Configured() || !m.rc.RemoteExists() {
-		m.setState(StateDisconnected, i18n.T("status.signin_required"))
+		m.status.SetState(StateDisconnected, i18n.T("status.signin_required"))
 		return
 	}
-	m.startMode()
+	m.restart()
 }
 
-// startMode (re)launches the goroutine for the currently configured mode.
-func (m *Manager) startMode() {
-	m.stopMode()
-	if m.parent == nil {
+// restart stops and restarts the active runner so a configuration change
+// takes effect immediately.
+func (m *Manager) restart() {
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	m.stopLocked()
+	m.startLocked()
+}
+
+// stopLocked cancels and waits for the active runner. Caller must hold
+// m.lifecycle. Never call it from within a runner goroutine: it waits for that
+// goroutine to finish.
+func (m *Manager) stopLocked() {
+	m.mu.Lock()
+	cancel := m.runCancel
+	m.runCancel = nil
+	m.active = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	m.runWG.Wait()
+}
+
+// startLocked (re)launches the runner for the currently configured mode.
+// Caller must hold m.lifecycle.
+func (m *Manager) startLocked() {
+	m.mu.Lock()
+	if m.paused {
+		m.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithCancel(m.parent)
-	m.mu.Lock()
+	if m.active != nil {
+		// guard against a second runner
+		m.mu.Unlock()
+		return
+	}
+	parent := m.parent
+	if parent == nil {
+		m.mu.Unlock()
+		return
+	}
+	mode := m.cfg.Mode()
+	build, ok := runners[mode]
+	if !ok {
+		m.mu.Unlock()
+		m.status.SetState(StateError, i18n.T("status.unknown_mode", mode))
+		return
+	}
+	runner := build(m)
+	ctx, cancel := context.WithCancel(parent)
 	m.runCancel = cancel
-	mode := m.cfg.Mode
+	m.active = runner
 	m.mu.Unlock()
 
 	m.runWG.Add(1)
 	go func() {
 		defer m.runWG.Done()
-		switch mode {
-		case config.ModeMirror:
-			m.runMirror(ctx)
-		default:
-			m.runStream(ctx)
-		}
+		runner.Run(ctx)
 	}()
-}
-
-// stopMode cancels and waits for the active mode goroutine. Never call from
-// within a runner goroutine.
-func (m *Manager) stopMode() {
-	m.mu.Lock()
-	c := m.runCancel
-	m.runCancel = nil
-	m.mu.Unlock()
-	if c != nil {
-		c()
-	}
-	m.runWG.Wait()
 }
 
 // Shutdown stops all activity and cleans up the mount.
 func (m *Manager) Shutdown() {
-	m.stopMode()
+	m.lifecycle.Lock()
+	m.stopLocked()
+	m.lifecycle.Unlock()
 	// Tell the file-manager integration to stop showing indicators: without a
 	// mount there is nothing left to indicate.
 	m.publishFM(Status{})
@@ -204,16 +315,25 @@ func (m *Manager) Shutdown() {
 
 // SetMode switches the sync mode and restarts syncing.
 func (m *Manager) SetMode(mode config.SyncMode) error {
-	m.cfg.Mode = mode
-	if err := m.cfg.Save(); err != nil {
+	if err := m.cfg.SetMode(mode); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.status.Mode = mode
-	m.mu.Unlock()
-	m.broadcast()
+	m.status.Notify()
 	if m.cfg.Configured() {
-		m.startMode()
+		m.restart()
+	}
+	return nil
+}
+
+// SetLocalDir moves the sync folder and restarts syncing so the new location
+// takes effect. The old mount point is released by the runner being stopped.
+func (m *Manager) SetLocalDir(path string) error {
+	if err := m.cfg.SetLocalDir(path); err != nil {
+		return err
+	}
+	m.status.Notify()
+	if m.cfg.Configured() {
+		m.restart()
 	}
 	return nil
 }
@@ -221,66 +341,76 @@ func (m *Manager) SetMode(mode config.SyncMode) error {
 // SetConflictMode switches how mirror-mode conflicts are resolved and restarts
 // mirror syncing so the new bisync flags take effect.
 func (m *Manager) SetConflictMode(mode string) error {
-	if mode != config.ConflictManual {
-		mode = config.ConflictAuto
-	}
-	m.cfg.ConflictMode = mode
-	if err := m.cfg.Save(); err != nil {
+	if err := m.cfg.SetConflictMode(mode); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.status.ConflictMode = mode
-	m.mu.Unlock()
-	m.broadcast()
-	if m.cfg.Configured() && m.cfg.Mode == config.ModeMirror {
-		m.startMode()
+	m.status.Notify()
+	if m.cfg.Configured() && m.cfg.Mode() == config.ModeMirror {
+		m.restart()
 	}
 	return nil
 }
 
 // Pause stops syncing until Resume is called.
 func (m *Manager) Pause() {
-	m.stopMode()
-	m.setState(StatePaused, i18n.T("status.paused"))
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	m.mu.Lock()
+	m.paused = true
+	m.mu.Unlock()
+	m.stopLocked()
+	m.status.SetState(StatePaused, i18n.T("status.paused"))
 }
 
-// Resume restarts syncing after a pause.
+// Resume restarts syncing after a pause. A no-op when not currently paused,
+// so a double call (a double click, a tray race, an empty POST body) cannot
+// start a second runner alongside the one already running.
 func (m *Manager) Resume() {
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	m.mu.Lock()
+	if !m.paused {
+		m.mu.Unlock()
+		return
+	}
+	m.paused = false
+	m.mu.Unlock()
 	if !m.cfg.Configured() {
 		return
 	}
-	m.startMode()
+	m.stopLocked()
+	m.startLocked()
 }
 
-// SyncNow triggers an immediate reconciliation.
+// Paused reports whether syncing is currently paused.
+func (m *Manager) Paused() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
+}
+
+// SyncNow triggers an immediate reconciliation in the active mode.
 func (m *Manager) SyncNow() {
-	switch m.cfg.Mode {
-	case config.ModeMirror:
-		select {
-		case m.syncTrigger <- struct{}{}:
-		default:
-		}
-	default:
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			_ = m.ctl.Refresh(ctx, "")
-			m.warmOffline(ctx)
-		}()
+	m.mu.Lock()
+	runner := m.active
+	m.mu.Unlock()
+	if runner != nil {
+		runner.SyncNow()
 	}
 }
 
 // Login runs the OAuth flow, stores the account and starts syncing on success.
-func (m *Manager) Login(ctx context.Context, onLine func(string)) error {
-	// rclone opens the sign-in link via xdg-open; route that through our own
-	// opener so the link reliably reaches the user's browser. Best-effort: if the
-	// shim cannot be written, rclone opens the link itself as before.
-	if dir, err := window.InstallOpenShim(); err == nil {
-		m.rc.SetURLOpener(dir)
-	} else {
-		m.logf("browser shim unavailable, letting rclone open the sign-in link: %v", err)
+// openerDir routes rclone's sign-in link through our own opener shim (see
+// window.InstallOpenShim, installed by the caller); "" lets rclone open the
+// link itself.
+func (m *Manager) Login(ctx context.Context, openerDir string, onLine func(string)) error {
+	creds := m.cfg.Google()
+	opts := rclone.LoginOptions{
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
+		OpenerDir:    openerDir,
 	}
-	if err := m.rc.Login(ctx, onLine); err != nil {
+	if err := m.rc.Login(ctx, opts, onLine); err != nil {
 		return err
 	}
 	if !m.rc.RemoteExists() {
@@ -290,35 +420,38 @@ func (m *Manager) Login(ctx context.Context, onLine func(string)) error {
 	if email == "" {
 		email = "Google Drive"
 	}
-	m.cfg.AccountEmail = email
-	if err := m.cfg.Save(); err != nil {
+	if err := m.cfg.SetAccountEmail(email); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.status.Account = email
-	m.mu.Unlock()
-	m.notifier.Notify(appName, i18n.T("notify.signed_in_as", email))
-	m.startMode()
+	m.status.Notify()
+	m.notifier.Notify(i18n.T("notify.signed_in_as", email))
+	// Only the final start is serialised, not the OAuth flow above: that can
+	// run for minutes and must not hold up an unrelated SetLocalDir/SetMode
+	// call from the settings UI.
+	m.restart()
 	return nil
 }
 
-// Logout signs out and removes the remote.
+// Logout signs out and removes the remote. Held under one lifecycle critical
+// section so a concurrent SetMode cannot restart against a remote this just
+// deleted.
 func (m *Manager) Logout(ctx context.Context) error {
-	m.stopMode()
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	m.mu.Lock()
+	m.paused = false
+	m.mu.Unlock()
+	m.stopLocked()
 	_ = m.rc.Logout(ctx)
-	m.cfg.AccountEmail = ""
-	if err := m.cfg.Save(); err != nil {
+	if err := m.cfg.SetAccountEmail(""); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.status.Account = ""
-	m.mu.Unlock()
-	m.setState(StateDisconnected, i18n.T("status.signed_out"))
+	m.status.SetState(StateDisconnected, i18n.T("status.signed_out"))
 	return nil
 }
 
 // GoogleCreds returns the currently configured custom OAuth client credentials.
-func (m *Manager) GoogleCreds() config.GoogleCreds { return m.cfg.Google }
+func (m *Manager) GoogleCreds() config.GoogleCreds { return m.cfg.Google() }
 
 // SetGoogleCreds stores custom OAuth client credentials for login. Passing an
 // empty GoogleCreds reverts to rclone's built-in credentials. The change only
@@ -327,65 +460,56 @@ func (m *Manager) SetGoogleCreds(creds config.GoogleCreds) error {
 	if m.cfg.Configured() {
 		return errors.New(i18n.T("err.sign_out_first"))
 	}
-	m.cfg.Google = creds
-	if err := m.cfg.Save(); err != nil {
-		return err
-	}
-	m.rc.SetCreds(creds)
-	return nil
+	return m.cfg.SetGoogle(creds)
 }
 
-// SetOffline pins a Drive-relative path for offline availability, or releases it
-// again (stream mode only).
-//
-// Releasing does more than drop the pin: it deletes the local copy, so the space
-// it used comes back – "free up space" in the file manager's context menu ends up
-// here too, for files that were merely downloaded rather than pinned.
-func (m *Manager) SetOffline(path string, on bool) error {
-	if on {
-		m.cfg.AddOffline(path)
-	} else {
-		m.cfg.RemoveOffline(path)
+// -------- status plumbing --------
+
+// Status returns the current snapshot.
+func (m *Manager) Status() Status { return m.status.Get() }
+
+// Subscribe registers fn to receive the current status and every later change.
+// fn must not call back into the manager's status (directly or through a
+// method that updates it) - the delivery is serialised under a lock that call
+// would try to retake, which deadlocks.
+func (m *Manager) Subscribe(fn func(Status)) { m.status.Subscribe(fn) }
+
+// setState is the runners' shortcut into the status store; an error state is
+// also logged, since that is the one the user will come asking about.
+func (m *Manager) setState(s State, msg string) {
+	if s == StateError {
+		m.log.Errorf("%s", msg)
 	}
-	if err := m.cfg.Save(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	m.status.Offline = append([]string{}, m.cfg.OfflinePaths...)
-	m.mu.Unlock()
-	m.broadcast()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if on {
-			m.warmPath(ctx, path)
-			return
-		}
-		if freed := m.freePath(ctx, path); freed > 0 {
-			m.logf("freed %s by releasing %s", humanBytes(freed), path)
-			m.notifier.Notify(appName, i18n.T("notify.space_freed", humanBytes(freed)))
-		}
-		m.broadcast()
-	}()
-	return nil
+	m.status.SetState(s, msg)
 }
 
-// SetPreviews switches the file manager's previews for the sync folder off or on
-// (see internal/dolphin) and, when switching off, applies the setting to every
-// folder inside the Drive in the background – Dolphin needs one marker per folder.
-func (m *Manager) SetPreviews(off bool) error {
-	if err := dolphin.SetPreviews(m.cfg.LocalDir, off); err != nil {
-		return err
+// ResetErrors clears rclone's error counter and the current error state.
+func (m *Manager) ResetErrors() {
+	ctx, cancel := context.WithTimeout(context.Background(), rcCallTimeout)
+	defer cancel()
+	_ = m.ctl.ResetStats(ctx)
+	m.status.Update(func(rt *Runtime) { rt.Errors = 0 })
+}
+
+// fmInfo builds the snapshot the file-manager integration works from.
+func (m *Manager) fmInfo(s Status) fmstate.Info {
+	return fmstate.Info{
+		Active:   s.Active(),
+		Mode:     string(s.Mode),
+		State:    string(s.State),
+		Root:     s.LocalDir,
+		CacheDir: m.cacheDir,
+		Remote:   m.cfg.RemoteName(),
+		Exec:     m.exe,
+		Pinned:   s.Offline,
 	}
-	if !off {
-		return nil
+}
+
+// publishFM hands the current picture to the file-manager integration.
+func (m *Manager) publishFM(s Status) {
+	if err := m.fmPub.Publish(m.fmInfo(s)); err != nil {
+		m.log.Errorf("could not publish the file-manager state: %v", err)
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		m.applyPreviewFolders(ctx)
-	}()
-	return nil
 }
 
 // humanBytes formats a byte count the way a file manager would.
@@ -407,80 +531,12 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", value, suffix)
 }
 
-// -------- status plumbing --------
-
-// Status returns the current snapshot.
-func (m *Manager) Status() Status {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.status
-}
-
-// Subscribe registers fn to receive every subsequent status change.
-func (m *Manager) Subscribe(fn func(Status)) {
-	m.mu.Lock()
-	m.listeners = append(m.listeners, fn)
-	cur := m.status
-	m.mu.Unlock()
-	fn(cur)
-}
-
-func (m *Manager) setState(s State, msg string) {
-	if s == StateError {
-		m.logf("ERROR: %s", msg)
-	}
-	m.mu.Lock()
-	m.status.State = s
-	m.status.Message = msg
-	m.mu.Unlock()
-	m.broadcast()
-}
-
-// ResetErrors clears rclone's error counter and the current error state.
-func (m *Manager) ResetErrors() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = m.ctl.ResetStats(ctx)
-	m.mu.Lock()
-	m.status.Errors = 0
-	m.mu.Unlock()
-	m.broadcast()
-}
-
-func (m *Manager) broadcast() {
-	m.mu.Lock()
-	cur := m.status
-	ls := append([]func(Status){}, m.listeners...)
-	m.mu.Unlock()
-	for _, fn := range ls {
-		fn(cur)
-	}
-	m.publishFM(cur)
-}
-
-// fmInfo builds the snapshot the file-manager integration works from.
-func (m *Manager) fmInfo(s Status) fmstate.Info {
-	exe := os.Getenv("APPIMAGE")
-	if exe == "" {
-		exe, _ = os.Executable()
-	}
-	return fmstate.Info{
-		Active:   s.State != "" && s.State != StateDisconnected,
-		Mode:     string(m.cfg.Mode),
-		State:    string(s.State),
-		Root:     m.cfg.LocalDir,
-		CacheDir: m.cacheDir,
-		Remote:   m.cfg.RemoteName,
-		Exec:     exe,
-		Pinned:   append([]string{}, m.cfg.OfflinePaths...),
-	}
-}
-
-// publishFM hands the current picture to the file-manager integration (see
-// package fmstate). Writes that would not change the file are skipped inside the
-// publisher, so calling this on every broadcast is cheap.
-func (m *Manager) publishFM(s Status) {
-	if err := m.fmPub.Publish(m.fmInfo(s)); err != nil {
-		m.logf("could not publish the file-manager state: %v", err)
+// sleepCtx sleeps for d, returning true if ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	case <-time.After(d):
+		return false
 	}
 }

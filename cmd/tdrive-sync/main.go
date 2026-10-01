@@ -13,19 +13,16 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"tdrive-sync/internal/config"
 	"tdrive-sync/internal/dolphin"
-	"tdrive-sync/internal/fmstate"
 	"tdrive-sync/internal/i18n"
 	"tdrive-sync/internal/logbuf"
 	"tdrive-sync/internal/logfile"
@@ -70,211 +67,14 @@ func main() {
 		cliFileState()
 	case "dolphin":
 		cliDolphin()
+	case "restart-wait":
+		// Internal: the second half of an update restart, see restartFunc.
+		cliRestartWait()
 	case "version", "--version", "-v":
 		fmt.Println("tdrive-sync", version)
 	default:
 		usage()
 	}
-}
-
-func usage() {
-	fmt.Print(`tdrive-sync – Google Drive synchronisation
-
-Usage:
-  tdrive-sync [run]              start the daemon with tray icon and settings window (default)
-  tdrive-sync login              connect a Google account from the console (headless)
-  tdrive-sync open               open the settings window
-  tdrive-sync status             print the current status
-  tdrive-sync version            print the version
-
-File manager integration (KDE/Dolphin):
-  tdrive-sync dolphin install    build and install the overlay-icon plugin
-  tdrive-sync dolphin status     show whether the plugin is in place
-  tdrive-sync dolphin remove     uninstall it again
-  tdrive-sync dolphin previews on|off
-                                 previews in the sync folder (experimental; off keeps
-                                 them from downloading every file looked at)
-  tdrive-sync dolphin previews-default on|off
-                                 same as a Dolphin-wide default, for folders that
-                                 have no setting of their own
-
-  tdrive-sync offline on|off <path>…   keep paths offline, or release them
-  tdrive-sync file-state <path>…       print the sync state of paths
-`)
-}
-
-// cliOpenURL opens a URL in the user's browser.
-func cliOpenURL() {
-	if len(os.Args) < 3 {
-		log.Fatal("usage: tdrive-sync open-url <url>")
-	}
-	if err := window.OpenExternal(os.Args[2]); err != nil {
-		log.Fatalf("could not open %s: %v", os.Args[2], err)
-	}
-}
-
-// cliOffline pins paths for offline use or releases them again. The Dolphin
-// context menu calls this with absolute paths inside the sync folder.
-func cliOffline() {
-	if len(os.Args) < 4 || (os.Args[2] != "on" && os.Args[2] != "off") {
-		log.Fatal("usage: tdrive-sync offline on|off <path>…")
-	}
-	on := os.Args[2] == "on"
-	cfg := loadOrExit()
-	if !instanceRunning(cfg.WebPort) {
-		log.Fatal("the daemon is not running.")
-	}
-	info, err := fmstate.Load()
-	if err != nil {
-		log.Fatalf("could not read the sync state: %v", err)
-	}
-	for _, arg := range os.Args[3:] {
-		abs, err := filepath.Abs(arg)
-		if err != nil {
-			log.Printf("skipping %s: %v", arg, err)
-			continue
-		}
-		rel, ok := info.Rel(abs)
-		if !ok {
-			log.Printf("skipping %s: not inside %s", abs, info.Root)
-			continue
-		}
-		if err := postJSON(cfg.WebPort, "/api/offline", map[string]any{"path": rel, "on": on}); err != nil {
-			log.Printf("%s: %v", rel, err)
-			continue
-		}
-		if on {
-			fmt.Printf("keeping offline: %s\n", rel)
-		} else {
-			fmt.Printf("online only: %s\n", rel)
-		}
-	}
-}
-
-// cliFileState prints the sync state of paths (the same states the file-manager
-// indicator shows).
-func cliFileState() {
-	if len(os.Args) < 3 {
-		log.Fatal("usage: tdrive-sync file-state <path>…")
-	}
-	info, err := fmstate.Load()
-	if err != nil {
-		log.Fatalf("could not read the sync state: %v", err)
-	}
-	for _, arg := range os.Args[2:] {
-		abs, err := filepath.Abs(arg)
-		if err != nil {
-			log.Printf("skipping %s: %v", arg, err)
-			continue
-		}
-		state := string(info.Resolve(abs))
-		if state == "" {
-			state = "-"
-		}
-		fmt.Printf("%-9s %s\n", state, abs)
-	}
-}
-
-// cliDolphin installs, inspects or removes the Dolphin integration.
-func cliDolphin() {
-	sub := "install"
-	if len(os.Args) > 2 {
-		sub = os.Args[2]
-	}
-	out := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
-	switch sub {
-	case "install":
-		if err := dolphin.Install(out); err != nil {
-			log.Fatalf("installation failed: %v", err)
-		}
-	case "remove", "uninstall":
-		if err := dolphin.Remove(out); err != nil {
-			log.Fatalf("removal failed: %v", err)
-		}
-	case "status":
-		r, err := dolphin.Status()
-		if err != nil {
-			log.Fatal(err)
-		}
-		out("overlay plugin:      %s", present(r.OverlayPresent, r.Paths.Overlay))
-		out("context menu plugin: %s", present(r.ActionPresent, r.Paths.Action))
-		out("environment entry:   %s", present(r.EnvFilePresent, r.Paths.EnvFile))
-		out("on QT_PLUGIN_PATH:   %t", r.OnPluginPath)
-		cfg := loadOrExit()
-		if pv, err := dolphin.PreviewsStatus(cfg.LocalDir); err == nil {
-			out("previews in %s: %s", cfg.LocalDir, map[bool]string{true: "off", false: "on"}[pv.Disabled])
-		}
-		if r.OverlayPresent && !r.OnPluginPath {
-			out("")
-			out("The plugin is installed but not on this process's QT_PLUGIN_PATH.")
-			out("Log out and back in once, or start Dolphin with:")
-			out("  QT_PLUGIN_PATH=%q dolphin", r.Paths.PluginDir)
-		}
-	case "previews-default":
-		if len(os.Args) < 4 || (os.Args[3] != "on" && os.Args[3] != "off") {
-			log.Fatal("usage: tdrive-sync dolphin previews-default on|off")
-		}
-		off := os.Args[3] == "off"
-		if err := dolphin.SetPreviewsDefault(off); err != nil {
-			log.Fatalf("could not change the default: %v", err)
-		}
-		if off {
-			out("Dolphin's default is now “no previews” (folders with their own setting keep it).")
-		} else {
-			out("Dolphin's preview default is back to normal.")
-		}
-	case "previews":
-		if len(os.Args) < 4 || (os.Args[3] != "on" && os.Args[3] != "off") {
-			log.Fatal("usage: tdrive-sync dolphin previews on|off")
-		}
-		cfg := loadOrExit()
-		off := os.Args[3] == "off"
-		// Through the daemon when it runs: it also writes the marker for every
-		// folder in the Drive, which needs the remote listing.
-		if instanceRunning(cfg.WebPort) {
-			if err := postJSON(cfg.WebPort, "/api/dolphin/previews", map[string]any{"disabled": off}); err != nil {
-				log.Fatalf("could not change the preview setting: %v", err)
-			}
-		} else if err := dolphin.SetPreviews(cfg.LocalDir, off); err != nil {
-			log.Fatalf("could not change the preview setting: %v", err)
-		} else if off {
-			out("note: the daemon is not running – the folders inside the Drive get their")
-			out("marker the next time it starts.")
-		}
-		if off {
-			out("previews off for %s – restart Dolphin so it reads the setting.", cfg.LocalDir)
-		} else {
-			out("previews on for %s – looking at files downloads them again.", cfg.LocalDir)
-		}
-	default:
-		log.Fatal("usage: tdrive-sync dolphin install|status|remove|previews on|off|previews-default on|off")
-	}
-}
-
-func present(ok bool, path string) string {
-	if ok {
-		return "installed – " + path
-	}
-	return "missing"
-}
-
-// postJSON sends a JSON body to the daemon's local API.
-func postJSON(port int, path string, body any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(msg)))
-	}
-	return nil
 }
 
 func loadOrExit() *config.Config {
@@ -297,6 +97,22 @@ func runDaemon() {
 		}
 	}
 
+	// Single instance, decided by the settings socket rather than by asking
+	// over HTTP first. The probe cannot be trusted on its own: a daemon that is
+	// still coming up does not answer yet, and the second launch would then
+	// mount over the first one's mount point and unmount it again on its way
+	// out. Binding before anything else starts makes that impossible.
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.WebPort()))
+	if err != nil {
+		if instanceRunning(cfg.WebPort()) {
+			log.Println("already running – opening the settings.")
+			spawnWindow()
+			return
+		}
+		log.Fatalf("settings port %d is not available: %v", cfg.WebPort(), err)
+	}
+	defer func() { _ = ln.Close() }()
+
 	// Register a user-scope .desktop file + icon so the Wayland compositor can
 	// show the app logo in the settings window's titlebar/taskbar (best-effort).
 	if err := window.InstallDesktopEntry(); err != nil {
@@ -308,19 +124,10 @@ func runDaemon() {
 		log.Printf("autostart entry not possible: %v", err)
 	}
 
-	// Single-instance: if a daemon already answers on the web port, just open
-	// its settings UI and exit (mimics clicking the app icon again).
-	if instanceRunning(cfg.WebPort) {
-		log.Println("already running – opening the settings.")
-		spawnWindow()
-		return
-	}
-
 	logs := logbuf.New(1000)
-	logf := logs.Logf
 	notifier := notify.NewDBus(appName, "tdrive-sync")
 
-	mgr, err := manager.New(cfg, notifier, logf)
+	mgr, err := manager.New(cfg, notifier, logs)
 	if err != nil {
 		log.Fatalf("start failed: %v", err)
 	}
@@ -329,40 +136,53 @@ func runDaemon() {
 	defer cancel()
 
 	// JSON status API: mirror every status change to status.json for monitoring.
-	mgr.Subscribe(func(s manager.Status) { writeStatusFile(s) })
+	// Status updates arrive every few seconds, so a persistent write failure
+	// (e.g. a full disk) is logged once per distinct error rather than on every
+	// single update, and a snapshot identical to the last one written is
+	// skipped entirely (mirrors fmstate.Publisher).
+	var lastWriteErr string
+	var lastBytes []byte
+	mgr.Subscribe(func(s manager.Status) {
+		data, err := json.MarshalIndent(s, "", "  ")
+		if err != nil {
+			log.Printf("could not encode status.json: %v", err)
+			return
+		}
+		if bytes.Equal(data, lastBytes) {
+			return
+		}
+		if err := writeStatusFile(data); err != nil {
+			if msg := err.Error(); msg != lastWriteErr {
+				lastWriteErr = msg
+				log.Printf("could not write status.json: %v", err)
+			}
+			return
+		}
+		lastWriteErr = ""
+		lastBytes = data
+	})
 
 	mgr.Start(ctx)
 
+	// Keep Dolphin's "no previews here" markers in step with the folders in the
+	// Drive. It lives out here rather than inside the manager: the sync backend
+	// has no business knowing about a file manager.
+	previews := dolphin.NewKeeper(mgr, logs.Logf)
+	go previews.Run(ctx)
+
 	// Self-update (AppImage builds): check GitHub releases, and let the user
 	// apply an update with one click from the settings window.
-	upd := updater.New(version, cfg.UpdatePrerelease, logf)
-	restart := func() {
-		// Close any open settings window so the update restart is clean and no
-		// stale window lingers against the old daemon.
-		closeWindows()
-		exe := os.Getenv("APPIMAGE")
-		if exe == "" {
-			if e, err := os.Executable(); err == nil {
-				exe = e
-			}
-		}
-		if exe != "" {
-			// Relaunch after a short delay so the old daemon releases the port
-			// and unmounts first.
-			_ = exec.Command("sh", "-c", fmt.Sprintf("sleep 2; exec %q run", exe)).Start()
-		}
-		cancel()
-	}
-	if !cfg.UpdateCheckDisabled && upd.Status().CanSelfUpdate {
-		go runUpdateChecks(ctx, upd, notifier, logf)
+	upd := updater.New(version, cfg.UpdatePrerelease(), logs.Logf)
+	if !cfg.UpdateCheckDisabled() && upd.Status().CanSelfUpdate {
+		go runUpdateChecks(ctx, upd, notifier, logs.Logf)
 	}
 
-	web := webui.New(mgr, cfg, logs, upd, restart)
+	web := webui.New(mgr, cfg, logs, upd, previews, restartFunc(cancel))
 
 	// Tray icon (best-effort; the daemon runs fine without it).
 	go func() {
 		act := tray.Actions{
-			OpenFolder:   func() { openFolder(cfg.LocalDir) },
+			OpenFolder:   func() { openFolder(mgr.LocalDir()) },
 			SyncNow:      func() { mgr.SyncNow() },
 			TogglePause:  func() { togglePause(mgr) },
 			OpenSettings: func() { spawnWindow() },
@@ -373,7 +193,7 @@ func runDaemon() {
 			},
 			Quit: cancel,
 		}
-		if err := tray.Run(ctx, mgr, act, logf); err != nil {
+		if err := tray.Run(ctx, mgr, act, logs.Logf); err != nil {
 			log.Printf("no tray icon: %v (the daemon keeps running, control it via %s)", err, web.URL())
 		}
 	}()
@@ -381,17 +201,61 @@ func runDaemon() {
 	// On first launch, open the settings window so the user can sign in.
 	if !cfg.Configured() {
 		log.Println("not signed in yet – opening the settings window")
-		go func() { time.Sleep(900 * time.Millisecond); spawnWindow() }()
+		go func() {
+			if !waitOrDone(ctx, firstWindowDelay) {
+				spawnWindow()
+			}
+		}()
 	} else {
 		log.Printf("ready. Settings via the tray icon or: %s open", exeName())
 	}
 
-	if err := web.ListenAndServe(ctx); err != nil {
+	if err := web.Serve(ctx, ln); err != nil {
 		log.Printf("web UI error: %v", err)
 	}
 	mgr.Shutdown()
+	closeWindows()
 	log.Println("stopped.")
 }
+
+// firstWindowDelay lets the web server come up before the first-launch window
+// points at it, so the user does not meet a connection error.
+const firstWindowDelay = 900 * time.Millisecond
+
+// restartFunc returns the callback the settings UI uses to restart the daemon
+// after an update was installed.
+func restartFunc(cancel context.CancelFunc) func() {
+	return func() {
+		// Close any open settings window so the update restart is clean and no
+		// stale window lingers against the old daemon.
+		closeWindows()
+		exe := os.Getenv("APPIMAGE")
+		if exe == "" {
+			if e, err := os.Executable(); err == nil {
+				exe = e
+			}
+		}
+		if exe != "" {
+			// Relaunch through a detached copy of ourselves, which waits for the
+			// old daemon to release the port and unmount before starting.
+			//
+			// Not through a shell: the path would have to be quoted for sh, and
+			// Go's %q is not shell quoting - an AppImage stored under a path
+			// containing "$" or a backtick would be expanded rather than run.
+			cmd := exec.Command(exe, "restart-wait")
+			cmd.Env = os.Environ()
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				log.Printf("could not schedule the restart: %v", err)
+			}
+		}
+		cancel()
+	}
+}
+
+// restartDelay is how long the replacement waits for the old daemon to shut
+// down: it has to release the settings port and unmount the Drive first.
+const restartDelay = 2 * time.Second
 
 // runUpdateChecks checks for updates shortly after start and then periodically,
 // notifying the user once per newly discovered version.
@@ -408,7 +272,7 @@ func runUpdateChecks(ctx context.Context, upd *updater.Updater, notifier notify.
 			logf("update check failed: %v", err)
 		} else if rel != nil && rel.Version != lastNotified {
 			lastNotified = rel.Version
-			notifier.Notify(appName, i18n.T("notify.update_available", rel.Tag))
+			notifier.Notify(i18n.T("notify.update_available", rel.Tag))
 		}
 		if waitOrDone(ctx, 6*time.Hour) {
 			return
@@ -426,55 +290,25 @@ func waitOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// writeStatusFile atomically writes the current status to status.json so
-// external tooling can monitor the sync without talking to the HTTP API.
-func writeStatusFile(s manager.Status) {
+// writeStatusFile atomically writes the already-encoded status to status.json
+// so external tooling can monitor the sync without talking to the HTTP API.
+func writeStatusFile(data []byte) error {
 	path, err := config.StatusPath()
 	if err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return
+		return err
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmp, path)
+	return os.Rename(tmp, path)
 }
 
 func togglePause(mgr *manager.Manager) {
-	if mgr.Status().State == manager.StatePaused {
+	if mgr.Paused() {
 		mgr.Resume()
 	} else {
 		mgr.Pause()
-	}
-}
-
-// cliLogin runs the OAuth flow in the terminal (for headless setups).
-func cliLogin() {
-	cfg := loadOrExit()
-	mgr, err := manager.New(cfg, notify.Noop{}, func(f string, a ...any) {})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("starting the Google sign-in – follow the link in the browser…")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	if err := mgr.Login(ctx, func(line string) { fmt.Println(line) }); err != nil {
-		log.Fatalf("sign-in failed: %v", err)
-	}
-	fmt.Println("signed in as", cfg.AccountEmail)
-}
-
-// openWindowCmd opens the settings UI in a native window (blocking).
-func openWindowCmd() {
-	cfg := loadOrExit()
-	url := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebPort)
-	if err := window.Open(appName, url); err != nil {
-		log.Printf("could not open the window: %v", err)
-		os.Exit(1)
 	}
 }
 
@@ -487,6 +321,10 @@ var windowProcs struct {
 
 // spawnWindow launches the settings window as a separate process so the daemon
 // keeps running and GTK stays isolated on its own main thread.
+//
+// Every window is waited for in the background. Without that each one the user
+// closes would stay a zombie for the daemon's lifetime, and the list below
+// would grow with it.
 func spawnWindow() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -502,20 +340,35 @@ func spawnWindow() {
 	windowProcs.mu.Lock()
 	windowProcs.cmds = append(windowProcs.cmds, cmd)
 	windowProcs.mu.Unlock()
+
+	go func() {
+		_ = cmd.Wait()
+		forgetWindow(cmd)
+	}()
 }
 
-// closeWindows asks every settings window this daemon started to close.
+// forgetWindow drops a finished window from the list.
+func forgetWindow(cmd *exec.Cmd) {
+	windowProcs.mu.Lock()
+	defer windowProcs.mu.Unlock()
+	for i, c := range windowProcs.cmds {
+		if c == cmd {
+			windowProcs.cmds = append(windowProcs.cmds[:i], windowProcs.cmds[i+1:]...)
+			return
+		}
+	}
+}
+
+// closeWindows asks every settings window this daemon started to close. The
+// goroutine spawnWindow left behind reaps each one.
 func closeWindows() {
 	windowProcs.mu.Lock()
-	cmds := windowProcs.cmds
-	windowProcs.cmds = nil
+	cmds := append([]*exec.Cmd{}, windowProcs.cmds...)
 	windowProcs.mu.Unlock()
 	for _, cmd := range cmds {
-		if cmd.Process == nil {
-			continue
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
 		}
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		go func(c *exec.Cmd) { _, _ = c.Process.Wait() }(cmd)
 	}
 }
 
@@ -524,32 +377,6 @@ func exeName() string {
 		return exe
 	}
 	return "tdrive-sync"
-}
-
-func cliStatus() {
-	cfg := loadOrExit()
-	if !instanceRunning(cfg.WebPort) {
-		fmt.Println("the daemon is not running.")
-		return
-	}
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", cfg.WebPort))
-	if err != nil {
-		fmt.Println("status not available:", err)
-		return
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(os.Stdout, resp.Body)
-	fmt.Println()
-}
-
-func instanceRunning(port int) bool {
-	client := &http.Client{Timeout: time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", port))
-	if err != nil {
-		return false
-	}
-	_ = resp.Body.Close()
-	return true
 }
 
 // openFolder opens a local folder in the file manager (tray action).

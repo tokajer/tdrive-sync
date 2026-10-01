@@ -284,6 +284,7 @@
     <div class="row">
       <button id="dolphinInstall" class="primary" data-i18n="ui.dolphin_install"></button>
       <button id="dolphinRemove" class="hidden" data-i18n="ui.dolphin_remove"></button>
+      <button id="dolphinCancel" class="hidden" data-i18n="ui.dolphin_cancel"></button>
     </div>
     <div class="row" style="margin-top:14px">
       <label class="off"><input type="checkbox" id="dolphinPreviews"> <span data-i18n="ui.dolphin_previews"></span></label>
@@ -579,8 +580,11 @@ async function loadDolphin(){
   }
   $('#dolphinInstall').textContent = d.installed ? t('ui.dolphin_reinstall') : t('ui.dolphin_install');
   $('#dolphinInstall').disabled = running;
-  $('#dolphinRemove').classList.toggle('hidden', !d.installed);
+  $('#dolphinRemove').classList.toggle('hidden', !d.installed || running);
   $('#dolphinRemove').disabled = running;
+  // Compiling can stall on a broken toolchain; give the user a way out that
+  // does not involve restarting the daemon.
+  $('#dolphinCancel').classList.toggle('hidden', !running);
   $('#dolphinPreviews').checked = !!d.previews_disabled;
   $('#dolphinPreviewsDefault').checked = !!d.previews_default_off;
 
@@ -600,6 +604,10 @@ async function loadDolphin(){
 $('#dolphinInstall').onclick = async ()=>{
   $('#dolphinState').textContent = t('ui.dolphin_installing');
   try { await post('/api/dolphin/install'); } catch(e){}
+  loadDolphin();
+};
+$('#dolphinCancel').onclick = async ()=>{
+  try { await post('/api/dolphin/cancel'); } catch(e){}
   loadDolphin();
 };
 $('#dolphinRemove').onclick = async ()=>{

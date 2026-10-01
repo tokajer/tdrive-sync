@@ -105,6 +105,7 @@ type Updater struct {
 	status     Status
 	latest     *Release
 	includePre bool
+	applying   bool
 }
 
 // New creates an Updater for the given current version. includePre selects
@@ -209,17 +210,30 @@ func (u *Updater) Check(ctx context.Context) (*Release, error) {
 // Apply downloads the last-found release's AppImage asset and replaces the
 // running AppImage. A restart is required afterwards.
 func (u *Updater) Apply(ctx context.Context) error {
-	u.mu.Lock()
-	rel := u.latest
 	target := u.appImage
-	u.mu.Unlock()
-
 	if target == "" {
 		return errors.New(i18n.T("update.appimage_only"))
 	}
+
+	// One at a time: two downloads into the same directory, both renaming onto
+	// the running AppImage, is not something the caller can recover from.
+	u.mu.Lock()
+	if u.applying {
+		u.mu.Unlock()
+		return errors.New(i18n.T("update.already_running"))
+	}
+	rel := u.latest
 	if rel == nil {
+		u.mu.Unlock()
 		return errors.New(i18n.T("update.none_available"))
 	}
+	u.applying = true
+	u.mu.Unlock()
+	defer func() {
+		u.mu.Lock()
+		u.applying = false
+		u.mu.Unlock()
+	}()
 
 	u.set(func(s *Status) {
 		s.State = StateDownloading
@@ -495,15 +509,16 @@ func comparePre(a, b string) int {
 		n = len(bs)
 	}
 	for i := 0; i < n; i++ {
-		ai, aok := as[i], i < len(as)
-		bi, bok := bs[i], i < len(bs)
-		// Fewer identifiers => lower precedence.
-		if !aok {
+		// Fewer identifiers means lower precedence. This has to be decided
+		// before indexing: n is the longer of the two, so the shorter slice is
+		// out of range here.
+		if i >= len(as) {
 			return -1
 		}
-		if !bok {
+		if i >= len(bs) {
 			return 1
 		}
+		ai, bi := as[i], bs[i]
 		an, aNum := toNum(ai)
 		bn, bNum := toNum(bi)
 		switch {

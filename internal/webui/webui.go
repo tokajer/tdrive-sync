@@ -14,8 +14,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"tdrive-sync/internal/config"
@@ -37,39 +37,35 @@ const i18nMarker = "<!--I18N-->"
 
 // Server is the settings web server.
 type Server struct {
-	mgr     *manager.Manager
-	cfg     *config.Config
-	logs    *logbuf.Buffer
-	upd     *updater.Updater
-	restart func()
-	addr    string
-	log     func(string, ...any)
-	index   []byte // index.html with the message catalog injected
+	mgr      *manager.Manager
+	cfg      *config.Config
+	logs     *logbuf.Buffer
+	upd      *updater.Updater
+	previews *dolphin.Keeper
+	restart  func()
+	addr     string
+	log      func(string, ...any)
+	index    []byte // index.html with the message catalog injected
 
-	mu          sync.Mutex
-	loginActive bool
-	loginLines  []string
-	loginErr    string
-	// The Dolphin integration is installed the same way the login runs: a job
-	// that takes a while and whose output the user has to see (a missing devel
-	// package is something only they can fix).
-	dolphinJob   string // "install", "remove" or "" while nothing runs
-	dolphinLines []string
-	dolphinErr   string
+	// login runs the OAuth flow; dolphin runs a plugin install/remove. Both are
+	// "start it, then poll for progress" jobs from the UI's point of view.
+	login   job
+	dolphin job
 }
 
-// New creates a settings server bound to 127.0.0.1 on the config's WebPort. upd
-// and restart may be nil (self-update simply stays unavailable).
-func New(mgr *manager.Manager, cfg *config.Config, logs *logbuf.Buffer, upd *updater.Updater, restart func()) *Server {
+// New creates a settings server bound to 127.0.0.1 on the config's WebPort. upd,
+// previews and restart may be nil (the matching feature stays unavailable).
+func New(mgr *manager.Manager, cfg *config.Config, logs *logbuf.Buffer, upd *updater.Updater, previews *dolphin.Keeper, restart func()) *Server {
 	return &Server{
-		mgr:     mgr,
-		cfg:     cfg,
-		logs:    logs,
-		upd:     upd,
-		restart: restart,
-		addr:    fmt.Sprintf("127.0.0.1:%d", cfg.WebPort),
-		log:     logs.Logf,
-		index:   renderIndex(indexHTML),
+		mgr:      mgr,
+		cfg:      cfg,
+		logs:     logs,
+		upd:      upd,
+		previews: previews,
+		restart:  restart,
+		addr:     fmt.Sprintf("127.0.0.1:%d", cfg.WebPort()),
+		log:      logs.Logf,
+		index:    renderIndex(indexHTML),
 	}
 }
 
@@ -113,17 +109,53 @@ func (s *Server) guard(mutating bool, h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) hostAllowed(host string) bool {
-	return host == s.addr || host == fmt.Sprintf("localhost:%d", s.cfg.WebPort)
+	return host == s.addr || host == fmt.Sprintf("localhost:%d", s.cfg.WebPort())
 }
 
 func (s *Server) originAllowed(origin string) bool {
-	return origin == "http://"+s.addr || origin == fmt.Sprintf("http://localhost:%d", s.cfg.WebPort)
+	return origin == "http://"+s.addr || origin == fmt.Sprintf("http://localhost:%d", s.cfg.WebPort())
 }
 
-// ListenAndServe starts the HTTP server, blocking until ctx is cancelled.
+// Addr is the address the server listens on.
+func (s *Server) Addr() string { return s.addr }
+
+// ListenAndServe binds the settings port and serves until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve runs the settings API on an already bound listener, blocking until ctx
+// is cancelled.
+//
+// The daemon binds the listener itself, before anything else starts: the socket
+// is what makes the instance unique, and a second launch has to find that out
+// before it mounts anything.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{Handler: s.routes()}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+	err := srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// shutdownGrace is how long in-flight requests get to finish on shutdown.
+const shutdownGrace = 3 * time.Second
+
+// routes builds the API. get marks read-only endpoints, post the state-changing
+// ones, which are POST-only (see guard).
+func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
-	// get: read-only endpoints; post: state-changing, POST-only.
 	get := func(p string, h http.HandlerFunc) { mux.HandleFunc(p, s.guard(false, h)) }
 	post := func(p string, h http.HandlerFunc) { mux.HandleFunc(p, s.guard(true, h)) }
 
@@ -148,6 +180,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	get("/api/dolphin", s.handleDolphin)
 	post("/api/dolphin/install", s.handleDolphinInstall)
 	post("/api/dolphin/remove", s.handleDolphinRemove)
+	post("/api/dolphin/cancel", s.handleDolphinCancel)
 	post("/api/dolphin/previews", s.handleDolphinPreviews)
 	post("/api/dolphin/previews-default", s.handleDolphinPreviewsDefault)
 	post("/api/open", s.handleOpen)
@@ -159,23 +192,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	post("/api/update/apply", s.handleUpdateApply)
 	post("/api/update/prerelease", s.handleUpdatePrerelease)
 	post("/api/update/restart", s.handleUpdateRestart)
-
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
-	}
-	srv := &http.Server{Handler: mux}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-	err = srv.Serve(ln)
-	if err == http.ErrServerClosed {
-		return nil
-	}
-	return err
+	return mux
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -210,9 +227,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	mode := config.ModeStream
-	if body.Mode == string(config.ModeMirror) {
-		mode = config.ModeMirror
+	mode, ok := config.ParseMode(body.Mode)
+	if !ok {
+		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
+		return
 	}
 	if err := s.mgr.SetMode(mode); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -264,8 +282,8 @@ func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.cfg.AutostartDisabled = !body.On
-	if err := s.cfg.Save(); err != nil {
+	if err := s.cfg.SetAutostartEnabled(body.On); err != nil {
+		s.log("could not save the autostart setting: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -285,13 +303,10 @@ func (s *Server) handleLocalDir(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T("err.invalid_path"), http.StatusBadRequest)
 		return
 	}
-	s.cfg.LocalDir = body.Path
-	if err := s.cfg.Save(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.mgr.SetLocalDir(body.Path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Restart in the current mode to apply the new location.
-	_ = s.mgr.SetMode(s.cfg.Mode)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -314,50 +329,32 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.loginActive {
-		s.mu.Unlock()
+	started := s.login.start("login", 5*time.Minute, func(ctx context.Context, logf func(string, ...any)) error {
+		dir, err := window.InstallOpenShim()
+		if err != nil {
+			s.log("browser shim unavailable, letting rclone open the sign-in link: %v", err)
+		}
+		return s.mgr.Login(ctx, dir, func(line string) {
+			logf("%s", line)
+			s.log("[login] %s", line)
+		})
+	})
+	if !started {
 		writeJSON(w, map[string]any{"ok": true, "already": true})
 		return
 	}
-	s.loginActive = true
-	s.loginLines = nil
-	s.loginErr = ""
-	s.mu.Unlock()
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		err := s.mgr.Login(ctx, func(line string) {
-			s.mu.Lock()
-			s.loginLines = append(s.loginLines, line)
-			if len(s.loginLines) > 100 {
-				s.loginLines = s.loginLines[len(s.loginLines)-100:]
-			}
-			s.mu.Unlock()
-			s.log("[login] %s", line)
-		})
-		s.mu.Lock()
-		s.loginActive = false
-		if err != nil {
-			s.loginErr = err.Error()
-		}
-		s.mu.Unlock()
-	}()
 	writeJSON(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	resp := map[string]any{
-		"active":     s.loginActive,
-		"lines":      append([]string{}, s.loginLines...),
-		"error":      s.loginErr,
+	name, lines, errMsg := s.login.snapshot()
+	writeJSON(w, map[string]any{
+		"active":     name != "",
+		"lines":      lines,
+		"error":      errMsg,
 		"configured": s.cfg.Configured(),
-		"account":    s.cfg.AccountEmail,
-	}
-	s.mu.Unlock()
-	writeJSON(w, resp)
+		"account":    s.cfg.AccountEmail(),
+	})
 }
 
 // handleGoogleCreds reports the currently configured OAuth client. The secret is
@@ -430,15 +427,12 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	entries, err := s.mgr.Rclone().List(ctx, rel)
+	entries, err := s.mgr.Browse(ctx, rel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	pinned := map[string]bool{}
-	for _, p := range s.cfg.OfflinePaths {
-		pinned[p] = true
-	}
+	pins := s.cfg.OfflinePaths()
 	type item struct {
 		Name  string `json:"name"`
 		Path  string `json:"path"`
@@ -456,14 +450,14 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if rel != "" {
 			full = rel + "/" + e.Path
 		}
-		offline := s.cfg.IsOffline(full)
+		offline := config.IsOfflinePath(pins, full)
 		items = append(items, item{
 			Name:      e.Name,
 			Path:      full,
 			IsDir:     e.IsDir,
 			Size:      e.Size,
 			Offline:   offline,
-			Inherited: offline && !pinned[full],
+			Inherited: offline && !slices.Contains(pins, full),
 		})
 	}
 	writeJSON(w, map[string]any{"path": rel, "entries": items})
@@ -489,14 +483,13 @@ func (s *Server) handleOffline(w http.ResponseWriter, r *http.Request) {
 // of a running install or removal, so the settings page can show progress and,
 // above all, why a build failed.
 func (s *Server) handleDolphin(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
+	name, lines, errMsg := s.dolphin.snapshot()
 	resp := map[string]any{
 		"kde":   isKDE(),
-		"job":   s.dolphinJob,
-		"lines": append([]string{}, s.dolphinLines...),
-		"error": s.dolphinErr,
+		"job":   name,
+		"lines": lines,
+		"error": errMsg,
 	}
-	s.mu.Unlock()
 
 	rep, err := dolphin.Status()
 	if err != nil {
@@ -513,7 +506,7 @@ func (s *Server) handleDolphin(w http.ResponseWriter, r *http.Request) {
 	if err := dolphin.Requirements(); err != nil {
 		resp["requirements"] = err.Error()
 	}
-	if pv, err := dolphin.PreviewsStatus(s.cfg.LocalDir); err == nil {
+	if pv, err := dolphin.PreviewsStatus(s.cfg.LocalDir()); err == nil {
 		resp["previews_disabled"] = pv.Disabled
 	}
 	if def, err := dolphin.PreviewsDefaultOff(); err == nil {
@@ -552,11 +545,17 @@ func (s *Server) handleDolphinPreviews(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T("err.invalid_request"), http.StatusBadRequest)
 		return
 	}
-	if err := s.mgr.SetPreviews(body.Disabled); err != nil {
+	syncDir := s.cfg.LocalDir()
+	if err := dolphin.SetPreviews(syncDir, body.Disabled); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.log("dolphin previews for %s: %v", s.cfg.LocalDir, map[bool]string{true: "off", false: "on"}[body.Disabled])
+	// Switching off only silences the sync folder's own view; every folder
+	// inside needs its own marker, which the keeper writes in the background.
+	if body.Disabled && s.previews != nil {
+		s.previews.Nudge()
+	}
+	s.log("dolphin previews for %s: %v", syncDir, map[bool]string{true: "off", false: "on"}[body.Disabled])
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -570,38 +569,31 @@ func (s *Server) handleDolphinRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// runDolphinJob runs job in the background – unless one is already running –
-// collecting its output for /api/dolphin to hand to the page.
-func (s *Server) runDolphinJob(name string, job func(func(string, ...any)) error) {
-	s.mu.Lock()
-	if s.dolphinJob != "" {
-		s.mu.Unlock()
-		return
-	}
-	s.dolphinJob = name
-	s.dolphinLines = nil
-	s.dolphinErr = ""
-	s.mu.Unlock()
+// handleDolphinCancel gives up on a running install. Compiling the plugin can
+// stall on a broken toolchain, and without this the job slot would stay taken
+// until the daemon restarts.
+func (s *Server) handleDolphinCancel(w http.ResponseWriter, r *http.Request) {
+	s.dolphin.cancel()
+	writeJSON(w, map[string]any{"ok": true})
+}
 
-	go func() {
-		err := job(func(format string, args ...any) {
-			line := fmt.Sprintf(format, args...)
-			s.mu.Lock()
-			s.dolphinLines = append(s.dolphinLines, line)
-			if len(s.dolphinLines) > 200 {
-				s.dolphinLines = s.dolphinLines[len(s.dolphinLines)-200:]
-			}
-			s.mu.Unlock()
-			s.log("[dolphin] %s", line)
+// dolphinJobTimeout is the outer bound on an install; the build steps inside
+// carry their own, shorter ones.
+const dolphinJobTimeout = 30 * time.Minute
+
+// runDolphinJob runs fn in the background – unless one is already running –
+// collecting its output for /api/dolphin to hand to the page.
+func (s *Server) runDolphinJob(name string, fn func(context.Context, func(string, ...any)) error) {
+	s.dolphin.start(name, dolphinJobTimeout, func(ctx context.Context, logf func(string, ...any)) error {
+		err := fn(ctx, func(format string, args ...any) {
+			logf(format, args...)
+			s.log("[dolphin] %s", fmt.Sprintf(format, args...))
 		})
-		s.mu.Lock()
-		s.dolphinJob = ""
 		if err != nil {
-			s.dolphinErr = err.Error()
 			s.log("dolphin %s failed: %v", name, err)
 		}
-		s.mu.Unlock()
-	}()
+		return err
+	})
 }
 
 // isKDE reports whether this is a KDE session. The integration is a KIO plugin,
@@ -619,7 +611,7 @@ func isKDE() bool {
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	go func() {
-		if err := window.OpenPath(s.cfg.LocalDir); err != nil {
+		if err := window.OpenPath(s.cfg.LocalDir()); err != nil {
 			s.log("could not open the sync folder: %v", err)
 		}
 	}()
@@ -694,8 +686,7 @@ func (s *Server) handleUpdatePrerelease(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.cfg.UpdatePrerelease = body.On
-	if err := s.cfg.Save(); err != nil {
+	if err := s.cfg.SetUpdatePrerelease(body.On); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

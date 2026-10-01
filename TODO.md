@@ -38,9 +38,11 @@ folder", `tdrive-sync dolphin previews on|off`, `internal/dolphin/previews.go`).
 Measured on the way there, so nobody repeats it: a `.directory` *inside* the folder
 has no effect at all (Dolphin always reads its own store path), and view properties
 are **per folder without inheritance** – silencing the sync folder leaves every
-subfolder previewing. Hence `Manager.previewFolders`, which writes the marker for
-every folder from `rclone lsjson --dirs-only --recursive` and repeats every 30
-minutes for folders that appear later.
+subfolder previewing. Hence `dolphin.Keeper` (`internal/dolphin/keeper.go`), which writes
+the marker for every folder from `rclone lsjson --dirs-only --recursive` and
+repeats every 30 minutes for folders that appear later. It is started from `cmd`
+rather than by the manager, so the sync backend carries no dependency on a file
+manager.
 
 Why it stays experimental (all measured):
 
@@ -75,11 +77,13 @@ happens naturally.
   revisit if someone browses huge folders.
 - **Releasing inside a pinned folder does nothing:** "free up space" on an item
   below a pinned folder deletes its cache, but the folder's pin brings it back on
-  the next warm run. `Manager.SetOffline` would have to refuse it (and say why) or
-  split the parent pin into its siblings.
+  the next warm run. `Manager.SetOffline` (`internal/manager/offline.go`) would
+  have to refuse it (and say why) or split the parent pin into its siblings.
+  `config.Config` already has what the check needs: compare `IsOffline(path)`
+  against an exact match in `OfflinePaths()`.
 - **Folder state is an approximation:** a folder counts as partially available as
   soon as one file below it holds data. A cheap "all of it is local" answer would
-  need a cached per-folder tally; the bounded scan in `fmstate.dirHasData` only
+  need a cached per-folder tally; the bounded scan in `fmstate.Cache.DirHasData` only
   rules out folders that hold nothing at all.
 - **README screenshot:** the overlay table describes the icons in words; a small
   screenshot of the four states in Dolphin would say it faster.
@@ -89,3 +93,26 @@ happens naturally.
   `KPluginFactory::instantiatePlugin<KAbstractFileItemActionPlugin>` and calling
   `actions()` with a `KFileItemListProperties`). Worth keeping under
   `internal/dolphin/plugin/` as an optional target if it is needed a third time.
+- **Config setters change memory before the save:** `config.Config.set` applies
+  the change and then writes the file; when the write fails, memory and disk
+  disagree (e.g. `SetLocalDir` returns an error, no restart happens, but status,
+  `SyncFolder` and the UI already use the new folder). Fix: apply to a copy
+  (deep-copy `OfflinePaths`, `addOffline`/`removeOffline` reuse the backing
+  array), save, then commit.
+- **Mirror edits during a run wait for the interval:** the inotify watcher drops
+  every event while bisync runs (`mirrorRunner.busy`), so bisync's own downloads
+  do not queue a redundant run. A user edit made during a long run (first sync)
+  is picked up only at the next interval (`mirror_interval_sec`, default 300 s).
+  Distinguishing our writes from the user's would need bisync's `-v` output.
+- **Pause has two sources of truth in the UI:** `index.html` derives "paused"
+  from `state === 'paused'`, the tray from `Manager.Paused()`. Consistent since
+  both are set in one critical section, but `/api/status` could expose
+  `Paused()` directly.
+- **Doc mismatch on "active":** `Status.Active()` is true while paused, starting
+  or in error, but `Manager.SyncFolder` and `fmstate.Info.Active` say
+  otherwise in their comments. Harmless today (the preview keeper writes to
+  Dolphin's own store, not into the mount); fix the docs or the predicate.
+- **Mirror recovery needs a current rclone:** auto-recovery runs
+  `--resync-mode newer`. The AppImage bundles a rclone that has it; a
+  non-AppImage install falling back to an old rclone on `$PATH` would fail every
+  recovery run.

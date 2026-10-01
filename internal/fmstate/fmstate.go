@@ -8,25 +8,19 @@
 // The published file is the entire contract with the Dolphin overlay plugin: the
 // plugin reads it once, watches it for changes, and then resolves every file it
 // is asked about on its own from rclone's VFS cache on disk. Keeping the file
-// manager off any IPC path matters — an overlay lookup runs for every visible
+// manager off any IPC path matters - an overlay lookup runs for every visible
 // item and must not block.
 //
-// rclone's cache layout below --cache-dir is
-//
-//	vfs/<remote>/<drive-relative path>      the (possibly sparse) data file
-//	vfsMeta/<remote>/<drive-relative path>  JSON: size, cached byte ranges, dirty
-//
-// so a file's state is one stat plus one small JSON read.
+// The cache itself is read (and freed) through Cache in cache.go; this file
+// holds the published snapshot and the state rules on top of it.
 package fmstate
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"sync"
 
 	"tdrive-sync/internal/config"
 )
@@ -59,7 +53,9 @@ const (
 	Local State = "local"
 )
 
-// Info is the snapshot handed to the file-manager integration.
+// Info is the snapshot handed to the file-manager integration. Its JSON form is
+// the wire format the C++ plugin parses, so field names are part of the
+// contract and change only together with Version.
 type Info struct {
 	// Version is the format version (see Version).
 	Version int `json:"version"`
@@ -83,7 +79,10 @@ type Info struct {
 	Pinned []string `json:"pinned"`
 }
 
-// Path returns the location of the published file.
+// Cache returns the view of rclone's VFS cache this snapshot points at.
+func (i Info) Cache() Cache { return Cache{Dir: i.CacheDir, Remote: i.Remote} }
+
+// Path returns the default location of the published file.
 func Path() (string, error) {
 	dir, err := config.StateDir()
 	if err != nil {
@@ -95,8 +94,28 @@ func Path() (string, error) {
 // Publisher writes Info to disk, skipping writes that would not change the
 // file. The integration watches that file, so needless rewrites would mean
 // needless refreshes.
+//
+// It is safe for concurrent use: in the daemon every status change publishes,
+// and those arrive from the stats poller, the sync runners and the HTTP
+// handlers at the same time.
 type Publisher struct {
+	mu   sync.Mutex
+	path string
 	last []byte
+}
+
+// NewPublisher returns a publisher writing to path. An empty path resolves to
+// the default location, which is what the daemon uses; tests pass their own so
+// two publishers cannot fight over one file.
+func NewPublisher(path string) (*Publisher, error) {
+	if path == "" {
+		p, err := Path()
+		if err != nil {
+			return nil, err
+		}
+		path = p
+	}
+	return &Publisher{path: path}, nil
 }
 
 // Publish atomically writes i unless the identical content is already on disk.
@@ -105,26 +124,34 @@ func (p *Publisher) Publish(i Info) error {
 	if i.Pinned == nil {
 		i.Pinned = []string{}
 	}
-	data, err := json.MarshalIndent(i, "", "  ")
+	raw, err := json.MarshalIndent(i, "", "  ")
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-	if string(data) == string(p.last) {
+	raw = append(raw, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if string(raw) == string(p.last) {
 		return nil
 	}
-	path, err := Path()
-	if err != nil {
+	if p.path == "" {
+		// Zero value: resolve the default location on first use, so a Publisher
+		// can be used without a constructor.
+		path, err := Path()
+		if err != nil {
+			return err
+		}
+		p.path = path
+	}
+	tmp := p.path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.Rename(tmp, p.path); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	p.last = data
+	p.last = raw
 	return nil
 }
 
@@ -134,12 +161,12 @@ func Load() (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Info{}, err
 	}
 	var i Info
-	if err := json.Unmarshal(data, &i); err != nil {
+	if err := json.Unmarshal(raw, &i); err != nil {
 		return Info{}, err
 	}
 	return i, nil
@@ -163,18 +190,11 @@ func (i Info) Rel(abs string) (string, bool) {
 	return strings.TrimPrefix(p, root+string(filepath.Separator)), true
 }
 
-// IsPinned reports whether a Drive-relative path is marked "keep offline",
-// either directly or through one of its parent folders.
+// IsPinned reports whether rel is marked "keep offline". Delegates to
+// config.IsOfflinePath so a pin written by an older version ("/Docs/") is
+// normalised exactly as it is in the daemon.
 func (i Info) IsPinned(rel string) bool {
-	for _, p := range i.Pinned {
-		if p == "" {
-			continue
-		}
-		if rel == p || strings.HasPrefix(rel, p+"/") {
-			return true
-		}
-	}
-	return false
+	return config.IsOfflinePath(i.Pinned, rel)
 }
 
 // Resolve returns the state of an absolute local path.
@@ -202,26 +222,27 @@ func (i Info) ResolveRel(rel string, isDir bool) State {
 	if i.Mode == string(config.ModeMirror) {
 		return Local
 	}
+	cache := i.Cache()
 	pinned := i.IsPinned(rel)
 	if isDir {
 		if pinned {
 			return Pinned
 		}
-		if dirHasData(i.DataPath(rel)) {
+		if cache.DirHasData(rel) {
 			return Partial
 		}
 		return Cloud
 	}
-	c := i.inspect(rel)
+	c := cache.Inspect(rel)
 	switch {
-	case !c.found || c.empty:
+	case !c.Found || c.Empty:
 		if pinned {
 			return Pinning
 		}
 		return Cloud
-	case c.dirty:
+	case c.Dirty:
 		return Uploading
-	case !c.complete:
+	case !c.Complete:
 		if pinned {
 			return Pinning
 		}
@@ -231,258 +252,4 @@ func (i Info) ResolveRel(rel string, isDir bool) State {
 	default:
 		return Cached
 	}
-}
-
-// dirScanBudget caps how many cache entries dirHasData looks at. It runs from a
-// file manager's overlay lookup, which happens for every visible item, so the
-// answer has to stay cheap; a folder that really holds data hits the first one
-// immediately anyway.
-const dirScanBudget = 64
-
-// dirHasData reports whether a cache directory holds any downloaded data.
-//
-// The directory tree outlives the data in it: rclone creates the folders when it
-// first touches a file below them, freeing a single file leaves its parents
-// behind, and a file that was only opened stays a fully sparse placeholder.
-// Taking "the cache folder exists" for "something is local" would therefore leave
-// folders marked as partially offline long after the last byte was freed.
-func dirHasData(dir string) bool {
-	budget := dirScanBudget
-	queue := []string{dir}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		entries, err := os.ReadDir(cur)
-		if err != nil {
-			// A missing cache directory means nothing is local. Anything else is
-			// unreadable, and there the cautious answer is "there is data".
-			if os.IsNotExist(err) {
-				continue
-			}
-			return true
-		}
-		for _, e := range entries {
-			if budget <= 0 {
-				return true // out of budget: keep the answer we gave before
-			}
-			budget--
-			if e.IsDir() {
-				queue = append(queue, filepath.Join(cur, e.Name()))
-				continue
-			}
-			fi, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if fi.Size() > 0 && allocatedBytes(fi) == 0 {
-				continue // a placeholder rclone has not downloaded into yet
-			}
-			return true
-		}
-	}
-	return false
-}
-
-// DataPath is where the cached content of a Drive-relative path lives.
-func (i Info) DataPath(rel string) string {
-	return filepath.Join(i.CacheDir, "vfs", i.Remote, rel)
-}
-
-// MetaPath is where rclone keeps the cache metadata of a Drive-relative path.
-func (i Info) MetaPath(rel string) string {
-	return filepath.Join(i.CacheDir, "vfsMeta", i.Remote, rel)
-}
-
-// Evict deletes the local copy of a Drive-relative path (a single file or a whole
-// folder). It returns how much disk space that freed and how many files were
-// deliberately kept.
-//
-// Files holding changes that have not reached Drive yet are always kept: the
-// cache copy is the only copy of those bytes. Everything else is safe to delete –
-// rclone has no remote-control command for freeing cached data (vfs/forget only
-// drops directory listings), and it simply downloads the data again on the next
-// access. Since this really deletes files, the target is checked to name
-// something inside the cache.
-func (i Info) Evict(rel string) (freed int64, kept int, err error) {
-	rel = strings.Trim(strings.TrimSpace(rel), "/")
-	if rel == "" || rel == "." {
-		return 0, 0, errors.New("refusing to evict the whole cache")
-	}
-	if i.CacheDir == "" || i.Remote == "" {
-		return 0, 0, errors.New("cache location unknown")
-	}
-	data, meta := i.DataPath(rel), i.MetaPath(rel)
-	if !within(filepath.Join(i.CacheDir, "vfs", i.Remote), data) ||
-		!within(filepath.Join(i.CacheDir, "vfsMeta", i.Remote), meta) {
-		return 0, 0, fmt.Errorf("%q points outside the cache", rel)
-	}
-
-	fi, err := os.Stat(data)
-	if os.IsNotExist(err) {
-		return 0, 0, nil // nothing downloaded, nothing to free
-	}
-	if err != nil {
-		return 0, 0, err
-	}
-	if !fi.IsDir() {
-		return i.evictFile(rel, fi)
-	}
-
-	err = filepath.WalkDir(data, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return nil // unreadable entries are left alone
-		}
-		child, err := filepath.Rel(data, path)
-		if err != nil {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		n, k, err := i.evictFile(filepath.Join(rel, child), info)
-		freed += n
-		kept += k
-		return err
-	})
-	if err != nil {
-		return freed, kept, err
-	}
-	if kept == 0 {
-		// Nothing had to stay, so the now-empty directory tree can go too.
-		if err := os.RemoveAll(data); err != nil {
-			return freed, kept, err
-		}
-		if err := os.RemoveAll(meta); err != nil {
-			return freed, kept, err
-		}
-	}
-	return freed, kept, nil
-}
-
-// evictFile removes one cached file unless it holds unsent local changes.
-func (i Info) evictFile(rel string, fi os.FileInfo) (freed int64, kept int, err error) {
-	if m, ok := readMeta(i.MetaPath(rel)); ok && m.Dirty {
-		return 0, 1, nil
-	}
-	freed = allocatedBytes(fi)
-	if err := os.Remove(i.DataPath(rel)); err != nil && !os.IsNotExist(err) {
-		return 0, 0, err
-	}
-	if err := os.Remove(i.MetaPath(rel)); err != nil && !os.IsNotExist(err) {
-		return freed, 0, err
-	}
-	return freed, 0, nil
-}
-
-// within reports whether path stays inside root.
-func within(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-// cachedRange is one downloaded byte range of a cache file.
-type cachedRange struct {
-	Pos  int64 `json:"Pos"`
-	Size int64 `json:"Size"`
-}
-
-// meta is the subset of rclone's VFS cache metadata we use.
-type meta struct {
-	Size  int64         `json:"Size"`
-	Dirty bool          `json:"Dirty"`
-	Rs    []cachedRange `json:"Rs"`
-}
-
-// cacheInfo is what the local cache says about one file.
-type cacheInfo struct {
-	found    bool // there is a cache file at all
-	empty    bool // it exists but holds no data yet
-	dirty    bool // it holds local changes not yet sent to Drive
-	complete bool // the whole file is there
-}
-
-// inspect looks at the cached copy of a Drive-relative file.
-//
-// Completeness cannot be read off rclone's recorded ranges alone: rclone leaves
-// "Rs" empty both for a file it has fully downloaded and for one it has barely
-// touched. What is reliable is how much of the sparse cache file is actually
-// allocated, with the first hole as the tie-breaker.
-func (i Info) inspect(rel string) cacheInfo {
-	var c cacheInfo
-	dataPath := i.DataPath(rel)
-	fi, err := os.Stat(dataPath)
-	if err != nil || fi.IsDir() {
-		return c
-	}
-	c.found = true
-
-	size := fi.Size()
-	m, haveMeta := readMeta(i.MetaPath(rel))
-	if haveMeta {
-		c.dirty = m.Dirty
-		if m.Size > 0 {
-			size = m.Size
-		}
-	}
-	if size <= 0 {
-		c.complete = true
-		return c
-	}
-
-	alloc := allocatedBytes(fi)
-	switch {
-	case covers(m.Rs, size):
-		// rclone did record the ranges: they are authoritative.
-		c.complete = true
-	case alloc >= size:
-		c.complete = true
-	case alloc == 0:
-		c.empty = true
-	default:
-		hole, err := firstHole(dataPath, size)
-		switch {
-		case err != nil:
-		case hole >= size:
-			c.complete = true
-		case hole == 0:
-			c.empty = true
-		}
-	}
-	return c
-}
-
-// readMeta reads rclone's cache metadata for one file.
-func readMeta(path string) (meta, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return meta{}, false
-	}
-	var m meta
-	if err := json.Unmarshal(data, &m); err != nil {
-		return meta{}, false
-	}
-	return m, true
-}
-
-// covers reports whether the recorded byte ranges span the whole file.
-func covers(rs []cachedRange, size int64) bool {
-	if len(rs) == 0 {
-		return false
-	}
-	sorted := append(rs[:0:0], rs...)
-	sort.Slice(sorted, func(a, b int) bool { return sorted[a].Pos < sorted[b].Pos })
-	var reached int64
-	for _, r := range sorted {
-		if r.Pos > reached {
-			return false // gap
-		}
-		if end := r.Pos + r.Size; end > reached {
-			reached = end
-		}
-	}
-	return reached >= size
 }

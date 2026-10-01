@@ -5,8 +5,11 @@
 
 package manager
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+)
 
-// watchMirror is a no-op on platforms without inotify; mirror mode then relies
-// on interval-based polling alone.
-func (m *Manager) watchMirror(ctx context.Context, root string) {}
+// watchLocal is a no-op where inotify is unavailable; the interval-based sync
+// covers local changes on its own.
+func watchLocal(context.Context, string, Logger, chan<- struct{}, *atomic.Bool) {}

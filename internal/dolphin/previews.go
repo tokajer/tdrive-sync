@@ -29,6 +29,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tdrive-sync/internal/xdg"
 )
 
 // previewsStateFile remembers what dolphinrc said before we touched it, so
@@ -226,28 +228,16 @@ const newFileNote = "!new"
 // globalPreviewFiles resolves Dolphin's global view properties and where the
 // previous value of the previews key is remembered.
 func globalPreviewFiles() (props, state string, err error) {
-	dataDir, err := xdgDir("XDG_DATA_HOME", ".local", "share")
+	dataDir, err := xdg.DataHome()
 	if err != nil {
 		return "", "", err
 	}
-	stateDir, err := xdgDir("XDG_STATE_HOME", ".local", "state")
+	stateDir, err := xdg.StateDir()
 	if err != nil {
 		return "", "", err
 	}
 	return filepath.Join(dataDir, "dolphin", "view_properties", "global", ".directory"),
-		filepath.Join(stateDir, "tdrive-sync", defaultStateFile), nil
-}
-
-// xdgDir returns an XDG base directory, falling back to its usual place in home.
-func xdgDir(env string, fallback ...string) (string, error) {
-	if v := os.Getenv(env); v != "" {
-		return v, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(append([]string{home}, fallback...)...), nil
+		filepath.Join(stateDir, defaultStateFile), nil
 }
 
 // previewsOff reports whether a view-properties file already switches previews
@@ -275,27 +265,23 @@ func previewPaths(syncDir string) (previewFiles, error) {
 	if !filepath.IsAbs(syncDir) {
 		return previewFiles{}, fmt.Errorf("sync folder %q is not an absolute path", syncDir)
 	}
-	home, err := os.UserHomeDir()
+	dataDir, err := xdg.DataHome()
 	if err != nil {
 		return previewFiles{}, err
 	}
-	dataDir := os.Getenv("XDG_DATA_HOME")
-	if dataDir == "" {
-		dataDir = filepath.Join(home, ".local", "share")
+	confDir, err := xdg.ConfigHome()
+	if err != nil {
+		return previewFiles{}, err
 	}
-	confDir := os.Getenv("XDG_CONFIG_HOME")
-	if confDir == "" {
-		confDir = filepath.Join(home, ".config")
-	}
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		stateDir = filepath.Join(home, ".local", "state")
+	stateDir, err := xdg.StateDir()
+	if err != nil {
+		return previewFiles{}, err
 	}
 	// Dolphin's layout: view_properties/local/<absolute path>/.directory
 	return previewFiles{
 		viewProps: filepath.Join(dataDir, "dolphin", "view_properties", "local"+syncDir, ".directory"),
 		dolphinrc: filepath.Join(confDir, "dolphinrc"),
-		state:     filepath.Join(stateDir, "tdrive-sync", previewsStateFile),
+		state:     filepath.Join(stateDir, previewsStateFile),
 	}, nil
 }
 
@@ -408,59 +394,78 @@ func keyOf(line string) (string, bool) {
 
 // iniValue looks a key up inside a group.
 func iniValue(lines []string, section, key string) (string, bool) {
-	in := false
-	for _, line := range lines {
-		if s, ok := sectionOf(line); ok {
-			in = s == section
+	start, end := sectionRange(lines, section)
+	if start < 0 {
+		return "", false
+	}
+	i := keyIndex(lines[start:end], key)
+	if i < 0 {
+		return "", false
+	}
+	_, value, _ := strings.Cut(lines[start+i], "=")
+	return value, true
+}
+
+// sectionRange returns the half-open line range holding a group's body, or
+// (-1, -1) when the file has no such group. Locating the group first is what
+// keeps iniSet and iniUnset free of state flags.
+func sectionRange(lines []string, section string) (start, end int) {
+	start = -1
+	for i, line := range lines {
+		s, ok := sectionOf(line)
+		if !ok {
 			continue
 		}
-		if !in {
-			continue
+		if start >= 0 {
+			return start, i // the next header ends our group
 		}
-		if k, ok := keyOf(line); ok && k == key {
-			_, value, _ := strings.Cut(line, "=")
-			return value, true
+		if s == section {
+			start = i + 1
 		}
 	}
-	return "", false
+	if start < 0 {
+		return -1, -1
+	}
+	return start, len(lines) // our group is the last one in the file
+}
+
+// keyIndex returns the position of an assignment to key, or -1.
+func keyIndex(lines []string, key string) int {
+	for i, line := range lines {
+		if k, ok := keyOf(line); ok && k == key {
+			return i
+		}
+	}
+	return -1
 }
 
 // iniSet sets a key inside a group, creating either as needed.
 func iniSet(lines []string, section, key, value string) []string {
-	out := make([]string, 0, len(lines)+3)
-	in, done, insertAt := false, false, -1
-	for _, line := range lines {
-		if s, ok := sectionOf(line); ok {
-			if in && !done {
-				// The group ended without the key: remember where its content
-				// stops, before the blank line separating it from the next group.
-				insertAt = contentEnd(out)
-			}
-			in = s == section
-		} else if in && !done {
-			if k, ok := keyOf(line); ok && k == key {
-				out = append(out, key+"="+value)
-				done = true
-				continue
-			}
-		}
-		out = append(out, line)
-	}
-	switch {
-	case done:
-		return out
-	case in: // the group is the last one in the file
-		insertAt = contentEnd(out)
-	case insertAt < 0: // no such group yet
+	assign := key + "=" + value
+	start, end := sectionRange(lines, section)
+
+	if start < 0 {
+		// No such group yet: append it, separated from what is above.
+		out := append([]string{}, lines...)
 		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
 			out = append(out, "")
 		}
-		return append(out, "["+section+"]", key+"="+value)
+		return append(out, "["+section+"]", assign)
 	}
-	out = append(out, "")
-	copy(out[insertAt+1:], out[insertAt:])
-	out[insertAt] = key + "=" + value
-	return out
+
+	if i := keyIndex(lines[start:end], key); i >= 0 {
+		out := append([]string{}, lines...)
+		out[start+i] = assign
+		return out
+	}
+
+	// The group is there but the key is not: insert it after the group's last
+	// non-blank line, before the blank line separating it from the next group.
+	at := start + contentEnd(lines[start:end])
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:at]...)
+	out = append(out, assign)
+	return append(out, lines[at:]...)
 }
 
 // contentEnd returns the index just after the last non-blank line.
@@ -474,17 +479,15 @@ func contentEnd(lines []string) int {
 
 // iniUnset removes a key from a group, leaving the group itself in place.
 func iniUnset(lines []string, section, key string) []string {
-	out := make([]string, 0, len(lines))
-	in := false
-	for _, line := range lines {
-		if s, ok := sectionOf(line); ok {
-			in = s == section
-		} else if in {
-			if k, ok := keyOf(line); ok && k == key {
-				continue
-			}
-		}
-		out = append(out, line)
+	start, end := sectionRange(lines, section)
+	if start < 0 {
+		return lines
 	}
-	return out
+	i := keyIndex(lines[start:end], key)
+	if i < 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines)-1)
+	out = append(out, lines[:start+i]...)
+	return append(out, lines[start+i+1:]...)
 }

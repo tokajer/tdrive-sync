@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"tdrive-sync/internal/i18n"
+	"tdrive-sync/internal/xdg"
 )
 
 // localized renders one desktop-entry line per supported language: the plain
@@ -31,13 +32,9 @@ func localized(key, msgKey string) string {
 // It is idempotent (only writes when content changed) and best-effort: any
 // error is returned for logging but is not fatal to the daemon.
 func InstallDesktopEntry() error {
-	data := os.Getenv("XDG_DATA_HOME")
-	if data == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		data = filepath.Join(home, ".local", "share")
+	data, err := xdg.DataHome()
+	if err != nil {
+		return err
 	}
 
 	iconDir := filepath.Join(data, "icons", "hicolor", "scalable", "apps")
@@ -75,13 +72,9 @@ func InstallDesktopEntry() error {
 // starts automatically when the user logs in. When enabled is false any
 // existing entry is removed. It is idempotent and best-effort.
 func InstallAutostart(enabled bool) error {
-	cfgHome := os.Getenv("XDG_CONFIG_HOME")
-	if cfgHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		cfgHome = filepath.Join(home, ".config")
+	cfgHome, err := xdg.ConfigHome()
+	if err != nil {
+		return err
 	}
 	dir := filepath.Join(cfgHome, "autostart")
 	path := filepath.Join(dir, "tdrive-sync.desktop")

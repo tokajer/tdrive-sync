@@ -10,23 +10,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-
-	"tdrive-sync/internal/config"
 )
 
-// Client drives a single rclone binary against our private config file.
+// Client drives a single rclone binary against our private config file. It is
+// immutable once New returns.
 type Client struct {
-	bin       string
-	conf      string
-	remote    string
-	creds     config.GoogleCreds
-	openerDir string // PATH prefix for Login, see SetURLOpener
+	bin    string
+	conf   string
+	remote string
+	rcUser string // control-server credentials, see New
+	rcPass string
 }
 
 // FindBinary locates the rclone executable. Search order:
@@ -61,30 +61,18 @@ func isExec(p string) bool {
 	return err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0
 }
 
-// New creates a Client, locating the binary and resolving the config path.
-func New(remote string, creds config.GoogleCreds) (*Client, error) {
+// New creates a Client, locating the binary. conf is the rclone config file
+// path (see config.RcloneConfPath). rcUser/rcPass are the credentials the
+// mount's control server requires; they are handed to the process through
+// RCLONE_RC_USER/RCLONE_RC_PASS rather than argv, so they do not show up in
+// the process list (rclone reads RCLONE_<FLAG> for any flag).
+func New(remote, conf, rcUser, rcPass string) (*Client, error) {
 	bin, err := FindBinary()
 	if err != nil {
 		return nil, err
 	}
-	conf, err := config.RcloneConfPath()
-	if err != nil {
-		return nil, err
-	}
-	return &Client{bin: bin, conf: conf, remote: remote, creds: creds}, nil
+	return &Client{bin: bin, conf: conf, remote: remote, rcUser: rcUser, rcPass: rcPass}, nil
 }
-
-// SetCreds updates the custom OAuth client used for the next Login. It has no
-// effect on a remote that already exists (the client is baked in at creation
-// time), so callers should only change it while signed out.
-func (c *Client) SetCreds(creds config.GoogleCreds) { c.creds = creds }
-
-// SetURLOpener puts dir first on the PATH of the login command. rclone shows
-// the OAuth link by shelling out to xdg-open, so a directory holding our own
-// xdg-open shim routes that call into the app's opener (see
-// window.InstallOpenShim). Passing "" leaves the environment alone, and rclone
-// opens the link on its own.
-func (c *Client) SetURLOpener(dir string) { c.openerDir = dir }
 
 // Bin returns the resolved rclone binary path.
 func (c *Client) Bin() string { return c.bin }
@@ -106,24 +94,38 @@ func (c *Client) RemoteExists() bool {
 	return strings.Contains(string(data), "["+c.remote+"]")
 }
 
+// LoginOptions configures one OAuth sign-in.
+type LoginOptions struct {
+	// ClientID and ClientSecret select a custom OAuth client; leaving both
+	// empty uses rclone's built-in Drive credentials.
+	ClientID     string
+	ClientSecret string
+	// OpenerDir is prepended to PATH for the duration of the login command.
+	// rclone shows the OAuth link by shelling out to xdg-open, so a directory
+	// holding our own xdg-open shim routes that call into the app's opener
+	// (see window.InstallOpenShim) instead of rclone launching a browser
+	// directly. "" leaves the environment alone.
+	OpenerDir string
+}
+
 // Login runs the interactive OAuth flow, streaming rclone's stdout/stderr line
 // by line to onLine (used to surface the "open this URL" prompt to the user).
-func (c *Client) Login(ctx context.Context, onLine func(string)) error {
+func (c *Client) Login(ctx context.Context, opts LoginOptions, onLine func(string)) error {
 	args := append(c.base(),
 		"config", "create", c.remote, "drive",
 		"scope", "drive",
 		"config_is_local", "true",
 	)
-	if c.creds.ClientID != "" {
-		args = append(args, "client_id", c.creds.ClientID)
+	if opts.ClientID != "" {
+		args = append(args, "client_id", opts.ClientID)
 	}
-	if c.creds.ClientSecret != "" {
-		args = append(args, "client_secret", c.creds.ClientSecret)
+	if opts.ClientSecret != "" {
+		args = append(args, "client_secret", opts.ClientSecret)
 	}
 	cmd := exec.CommandContext(ctx, c.bin, args...)
-	if c.openerDir != "" {
+	if opts.OpenerDir != "" {
 		cmd.Env = append(os.Environ(),
-			"PATH="+c.openerDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			"PATH="+opts.OpenerDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
 	return streamRun(cmd, onLine)
 }
@@ -183,7 +185,7 @@ func (c *Client) MountArgs(mountpoint, rcAddr, cacheDir string) []string {
 		"--use-mmap",
 		// Control API for status/refresh + POSIX perms. The RC credentials are
 		// passed via RCLONE_RC_USER/RCLONE_RC_PASS in the process environment
-		// (see manager.startProc) so they do not show up in the process list.
+		// (see Client.Start) so they do not show up in the process list.
 		"--rc", "--rc-addr", rcAddr,
 		"--file-perms", "0644",
 		"--dir-perms", "0755",
@@ -197,12 +199,14 @@ func (c *Client) MountArgs(mountpoint, rcAddr, cacheDir string) []string {
 //
 //   - workdir holds bisync's state and lock files (so we can clean up stale
 //     locks from crashed runs).
-//   - conflictMode "manual" keeps both versions of a conflicting file for the
-//     user to resolve; anything else means automatic resolution: newest wins,
-//     the losing copy is kept as a dated backup.
-//   - resync performs a full reconciliation (first run or auto-recovery); on an
-//     undecidable difference the cloud (Path1) wins.
-func (c *Client) BisyncArgs(localDir, workdir, conflictMode string, resync bool) []string {
+//   - manualConflicts keeps both versions of a conflicting file for the user to
+//     resolve; false means automatic resolution: newest wins, the losing copy
+//     is kept as a dated backup.
+//   - resyncMode forces a full reconciliation when non-empty (first run or
+//     auto-recovery), emitting `--resync --resync-mode <resyncMode>`. "" runs a
+//     normal bisync. Valid values in the bundled rclone: path1, path2, newer,
+//     older, larger, smaller.
+func (c *Client) BisyncArgs(localDir, workdir string, manualConflicts bool, resyncMode string) []string {
 	args := append(c.base(),
 		"bisync", c.Remote(), localDir,
 		"--workdir", workdir,
@@ -215,7 +219,7 @@ func (c *Client) BisyncArgs(localDir, workdir, conflictMode string, resync bool)
 		"--transfers", "8",
 		"-v",
 	)
-	if conflictMode == config.ConflictManual {
+	if manualConflicts {
 		// Keep both sides renamed (…conflict1 = Drive, …conflict2 = local); the
 		// user picks a winner in the settings UI.
 		args = append(args,
@@ -231,10 +235,8 @@ func (c *Client) BisyncArgs(localDir, workdir, conflictMode string, resync bool)
 			"--conflict-suffix", "conflict-"+time.Now().Format("2006-01-02"),
 		)
 	}
-	if resync {
-		// Full reconciliation. Path1 (the cloud) is authoritative when a
-		// difference cannot be decided otherwise.
-		args = append(args, "--resync", "--resync-mode", "path1")
+	if resyncMode != "" {
+		args = append(args, "--resync", "--resync-mode", resyncMode)
 	}
 	return args
 }
@@ -293,7 +295,60 @@ func (c *Client) List(ctx context.Context, rel string) ([]Entry, error) {
 	return entries, nil
 }
 
-// streamRun executes cmd and forwards every combined output line to onLine.
+// maxLogLine bounds one captured output line. rclone can print a very long
+// path, and a scanner without a raised limit would stop reading at the first
+// line over 64 KiB, silently losing everything after it.
+const maxLogLine = 1024 * 1024
+
+// Start launches rclone with args, forwarding every output line to onLine, and
+// returns the command plus a channel carrying its exit error.
+//
+// This is the only place that starts the long-running rclone processes (mount,
+// bisync), so the environment they run with - the control-server credentials
+// above all - is decided once.
+func (c *Client) Start(args []string, onLine func(string)) (*exec.Cmd, chan error, error) {
+	cmd := exec.Command(c.bin, args...)
+	cmd.Env = append(os.Environ(),
+		"RCLONE_RC_USER="+c.rcUser,
+		"RCLONE_RC_PASS="+c.rcPass,
+	)
+	done := make(chan error, 1)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		// Without a pipe the run would be unobservable: no progress, and a
+		// failure reason that never reaches the log.
+		return nil, nil, fmt.Errorf("could not capture rclone output: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout // rclone prints progress and the OAuth URL to stderr
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	scanned := make(chan struct{})
+	go func() {
+		defer close(scanned)
+		scan(stdout, onLine)
+	}()
+	go func() {
+		<-scanned // drain the output before reporting the exit
+		done <- cmd.Wait()
+	}()
+	return cmd, done, nil
+}
+
+// scan forwards every line of r to onLine until it ends.
+func scan(r io.Reader, onLine func(string)) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLogLine)
+	for sc.Scan() {
+		if onLine != nil {
+			onLine(sc.Text())
+		}
+	}
+}
+
+// streamRun executes cmd and forwards every combined output line to onLine,
+// blocking until it exits. Used for the short config commands, where the caller
+// wants the result rather than a handle.
 func streamRun(cmd *exec.Cmd, onLine func(string)) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -303,12 +358,6 @@ func streamRun(cmd *exec.Cmd, onLine func(string)) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		if onLine != nil {
-			onLine(scanner.Text())
-		}
-	}
+	scan(stdout, onLine)
 	return cmd.Wait()
 }

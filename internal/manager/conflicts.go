@@ -43,10 +43,10 @@ type Conflict struct {
 func (m *Manager) Conflicts() []Conflict {
 	// Only mirror mode has real local files; walking a stream mount would pull
 	// every file down on demand.
-	if m.cfg.Mode != config.ModeMirror {
+	if m.cfg.Mode() != config.ModeMirror {
 		return nil
 	}
-	root := m.cfg.LocalDir
+	root := m.cfg.LocalDir()
 	var out []Conflict
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -82,7 +82,7 @@ func (m *Manager) Conflicts() []Conflict {
 // "delete" just removes the copy. Either way a fresh sync is triggered so the
 // decision propagates to Drive.
 func (m *Manager) ResolveConflict(rel, action string) error {
-	root := m.cfg.LocalDir
+	root := m.cfg.LocalDir()
 	// Clean against "/" so any ".." cannot escape the local dir.
 	full := filepath.Join(root, filepath.Clean("/"+rel))
 	if !strings.HasPrefix(full, filepath.Clean(root)+string(os.PathSeparator)) {
@@ -97,7 +97,7 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 		if err := os.Remove(full); err != nil {
 			return err
 		}
-		m.logf("conflict resolved: deleted %s", rel)
+		m.log.Logf("conflict resolved: deleted %s", rel)
 	case "keep":
 		dir := filepath.Dir(full)
 		base := markerBase(filepath.Base(full))
@@ -106,7 +106,7 @@ func (m *Manager) ResolveConflict(rel, action string) error {
 			return err
 		}
 		removeSiblingConflicts(dir, base, target)
-		m.logf("conflict resolved: kept %s as %s", rel, base)
+		m.log.Logf("conflict resolved: kept %s as %s", rel, base)
 	default:
 		return errors.New(i18n.T("err.unknown_action", action))
 	}
