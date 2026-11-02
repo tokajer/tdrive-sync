@@ -51,3 +51,4 @@ jobs:
         with:
           files: dist/*.AppImage
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
