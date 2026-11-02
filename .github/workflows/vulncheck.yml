@@ -1,0 +1,42 @@
+name: Vulnerability check
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+
+      - name: Vulnerability scan (Go source)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Build AppImage
+        run: ./build-appimage.sh
+
+      # Findings inside the upstream rclone release cannot be fixed here; whether
+      # to bump the pinned version is a manual decision.
+      - name: Vulnerability scan (bundled rclone)
+        continue-on-error: true
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary build/rclone
+
+      - name: Check for a newer rclone
+        run: |
+          pinned=$(sed -n 's/^RCLONE_VERSION=//p' build-appimage.sh)
+          latest=$(curl -fsSL https://downloads.rclone.org/version.txt | awk '{print $2}')
+          if [ "$latest" != "$pinned" ]; then
+            echo "::notice::rclone $latest is available (pinned: $pinned)"
+          fi

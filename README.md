@@ -66,8 +66,8 @@ for everything else (including an unset locale).
 
 ## Building the AppImage
 
-Requirements: Go ≥ 1.23, `curl`, `unzip`. rclone and appimagetool are downloaded
-automatically.
+Requirements: Go ≥ 1.26, `curl`, `unzip`. rclone and appimagetool are downloaded
+automatically (pinned versions, sha256-verified).
 
 ```bash
 ./build-appimage.sh

@@ -229,6 +229,22 @@ you touch.
   unexported; the accessors lock, and the setters persist the file in the same
   critical section. Nothing outside the package calls `Save()`.
 
+## Updating Go, rclone and tools
+
+- **Go:** CI builds with the latest stable Go. Raise the `go` line in `go.mod`
+  around each Go release (Feb/Aug).
+- **Go modules and GitHub Actions:** Dependabot opens weekly PRs; check.sh and
+  govulncheck run in CI on them.
+- **rclone / appimagetool / AppImage runtime:** bump the version and the sha256
+  values together in `build-appimage.sh` (rclone hash from the release's
+  `SHA256SUMS`, the others from the GitHub release assets). Then run `scripts/check.sh --plugin`, which runs the
+  contract tests against `build/rclone`, and test by hand in an isolated instance.
+- **govulncheck:** pinned in both workflows; Dependabot does not see it, so bump
+  it by hand when it is raised.
+- **Security fixes:** Go and rclone are both inside the AppImage, so a fix in
+  either only reaches users with a new tagged release. The weekly `vulncheck`
+  workflow reports findings and newer rclone versions.
+
 ## Conventions in this codebase
 
 - Comments and identifiers are English; user-visible strings go through

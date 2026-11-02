@@ -14,6 +14,7 @@
 #   scripts/check.sh              build, vet, gofmt, tests + system state
 #   scripts/check.sh --plugin     also compile the Dolphin KIO plugin
 #   scripts/check.sh --quiet      only failures and the summary
+#   TDRIVE_CONTRACT_RCLONE=<binary> adds rclone contract tests (default: build/rclone)
 
 set -uo pipefail
 
@@ -26,7 +27,7 @@ for arg in "$@"; do
         --plugin) WITH_PLUGIN=1 ;;
         --quiet) QUIET=1 ;;
         -h | --help)
-            sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -83,6 +84,16 @@ else
     # -race: the daemon shares one config and one status store across the HTTP
     # handlers, the sync runners and the stats poller. Those races are exactly
     # the kind that pass a plain test run.
+    # Contract tests need a real rclone; they skip without one. A build/rclone
+    # older than the pin would test something we no longer ship.
+    if [ -z "${TDRIVE_CONTRACT_RCLONE:-}" ]; then
+        pinned=$(sed -n 's/^RCLONE_VERSION=//p' build-appimage.sh)
+        if [ "$(build/rclone version 2>/dev/null | head -n1)" = "rclone $pinned" ]; then
+            export TDRIVE_CONTRACT_RCLONE="$PWD/build/rclone"
+        else
+            skip "rclone contract tests: build/rclone is not $pinned (run build-appimage.sh)"
+        fi
+    fi
     run "test (race)" "$GO" test -race ./...
 
     # Ignore the two files that were already unformatted before this check
